@@ -160,6 +160,21 @@ use once_cell::sync::Lazy;
 static MAPPED_KEYS: Lazy<Mutex<cfg::MappedKeys>> =
     Lazy::new(|| Mutex::new(cfg::MappedKeys::default()));
 
+#[cfg(target_os = "windows")]
+mod windows;
+#[cfg(target_os = "windows")]
+pub use windows::*;
+
+#[cfg(target_os = "linux")]
+mod linux;
+#[cfg(target_os = "linux")]
+pub use linux::*;
+
+#[cfg(target_os = "macos")]
+mod macos;
+#[cfg(target_os = "macos")]
+pub use macos::*;
+
 impl Kanata {
     /// Create a new configuration from a file.
     pub fn new(args: &ValidatedArgs) -> Result<Self> {
@@ -309,6 +324,7 @@ impl Kanata {
     /// Update keyberon layout state for press/release, handle repeat separately
     fn handle_key_event(&mut self, event: &KeyEvent) -> Result<()> {
         let evc: u16 = event.code.into();
+        error!("Handle event {:?}", event);
         let kbrn_ev = match event.value {
             KeyValue::Press => {
                 if let Some(state) = &mut self.dynamic_macro_record_state {

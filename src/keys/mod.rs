@@ -15,6 +15,11 @@ mod windows;
 #[cfg(target_os = "windows")]
 pub use windows::*;
 
+#[cfg(target_os = "macos")]
+mod macos;
+#[cfg(target_os = "macos")]
+pub use macos::*;
+
 static CUSTOM_STRS_TO_OSCODES: Lazy<Mutex<HashMap<String, OsCode>>> = Lazy::new(|| {
     let mut mappings = HashMap::default();
     add_default_str_osc_mappings(&mut mappings);
