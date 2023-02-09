@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use super::*;
 
-static PRESSED_KEYS: Lazy<Mutex<HashSet<OsCode>>> = Lazy::new(|| Mutex::new(HashSet::new()));
+static PRESSED_KEYS: Lazy<Mutex<HashSet<OsCode>>> = Lazy::new(|| Mutex::new(HashSet::default()));
 
 impl Kanata {
     /// Enter an infinite loop that listens for OS key events and sends them to the processing
@@ -31,7 +31,7 @@ impl Kanata {
                     } else {
                         // Unlike Linux, macOS does not use a separate value for repeat. However, our code
                         // needs to differentiate between initial press and repeat press.
-                        log::debug!("event loop: {:?}", key_event);
+                        debug!("event loop: {:?}", key_event);
                         match key_event.value {
                             KeyValue::Release => {
                                 PRESSED_KEYS.lock().remove(&key_event.code);
