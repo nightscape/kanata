@@ -34,6 +34,10 @@ path = "src/lib.rs"
 name = "kanata"
 path = "src/main.rs"
 
+[[bin]]
+name = "transform_chords"
+path = "src/transform_chords.rs"
+
 [dependencies]
 anyhow = "1"
 clap = { version = "4", features = [ "std", "derive", "help", "suggestions" ], default_features = false }
@@ -45,6 +49,7 @@ miette = { version = "5.7.0", features = ["fancy"] }
 once_cell = "1"
 parking_lot = "0.12"
 radix_trie = "0.2"
+regex = "1"
 rustc-hash = "1.1.0"
 simplelog = "0.12.0"
 serde_json = { version = "1", features = ["std"], default_features = false, optional = true }
