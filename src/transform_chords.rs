@@ -10,7 +10,7 @@ fn parse_kbd_file(file_path: &str) -> MResult<Cfg> {
     return cfg::new_from_file(path);
 }
 fn main() {
-    let input_data = fs::read_to_string("cfg_samples/input_chords.txt").expect("Unable to read file");
+    let input_data = fs::read_to_string("cfg_samples/chords.txt").expect("Unable to read file");
     let parsed_config =
         parse_kbd_file("cfg_samples/bone_mac.kbd").expect("Unable to parse kbd file");
 

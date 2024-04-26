@@ -1,7 +1,12 @@
+use itertools::Itertools;
 use kanata_keyberon::chord::{ChordV2, ChordsForKey, ChordsForKeys, ReleaseBehaviour};
 use rustc_hash::{FxHashMap, FxHashSet};
 
-use crate::{anyhow_expr, bail_expr};
+use std::fs;
+use std::path::Path;
+use std::{collections::HashMap, rc::Rc};
+
+use crate::{anyhow_expr, bail_expr, custom_action};
 
 use super::*;
 
@@ -10,96 +15,60 @@ pub(crate) fn parse_defchordv2(
     s: &ParserState,
 ) -> Result<ChordsForKeys<'static, KanataCustom>> {
     let mut chunks = exprs[1..].chunks_exact(5);
-    let mut all_chords = FxHashSet::default();
     let mut chords_container = ChordsForKeys::<'static, KanataCustom> {
         mapping: FxHashMap::default(),
     };
-    for chunk in chunks.by_ref() {
-        let keys = &chunk[0];
+    let all_chords = chunks
+        .by_ref()
+        .flat_map(|chunk| match chunk[0] {
+            // Match a line like
+            // (include filename.txt) () 100 all-released (layer1 layer2)
+            SExpr::List(Spanned {
+                t: ref exprs,
+                span: _,
+            }) if matches!(exprs.get(0), Some(SExpr::Atom(a)) if a.t == "include") => {
+                println!("include file: {:?}", exprs.len());
+                parse_chord_file(chunk, s)
+            }
+            SExpr::List(_) => Ok(vec![parse_single_chord(chunk, s)]),
+            _ => Ok(vec![]),
+        })
+        .flat_map(|vec_result| vec_result.into_iter())
+        .collect::<Vec<Result<_>>>();
+    let unsuccessful = all_chords
+        .iter()
+        .filter_map(|r| r.as_ref().err())
+        .collect::<Vec<_>>();
+    if !unsuccessful.is_empty() {
+        bail_expr!(
+            &exprs[0],
+            "Error parsing chord definition:\n{}",
+            unsuccessful
+                .iter()
+                .map(|e| e.msg.clone())
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+    }
+    let successful = all_chords.into_iter().filter_map(Result::ok).collect_vec();
 
-        let mut participants = keys
-            .list(s.vars())
-            .map(|l| {
-                l.iter()
-                    .try_fold(vec![], |mut keys, key| -> Result<Vec<u16>> {
-                        let k = key.atom(s.vars()).and_then(str_to_oscode).ok_or_else(|| {
-                            anyhow_expr!(
-                                key,
-                                "The first chord item must be a list of keys.\nInvalid key name."
-                            )
-                        })?;
-                        keys.push(k.into());
-                        Ok(keys)
-                    })
-            })
-            .ok_or_else(|| anyhow_expr!(keys, "The first chord item must be a list of keys."))??;
-        if participants.len() < 2 {
-            bail_expr!(keys, "The minimum number of participating chord keys is 2");
-        }
-        participants.sort();
-        if !all_chords.insert(participants.clone()) {
-            bail_expr!(
-                keys,
+    let mut all_participating_key_sets = FxHashSet::default();
+    for chord in successful {
+        if !all_participating_key_sets.insert(chord.participating_keys) {
+            ParseError::new_without_span(
                 "This chord has previously been defined.\n\
                 Only one set of chords must exist for one key combination."
             );
-        }
-
-        let action = parse_action(&chunk[1], s)?;
-        let timeout = parse_non_zero_u16(&chunk[2], s, "chord timeout")?;
-        let release_behaviour = chunk[3]
-            .atom(s.vars())
-            .and_then(|r| {
-                Some(match r {
-                    "first-release" => ReleaseBehaviour::OnFirstRelease,
-                    "all-released" => ReleaseBehaviour::OnLastRelease,
-                    _ => return None,
-                })
-            })
-            .ok_or_else(|| {
-                anyhow_expr!(
-                    &chunk[3],
-                    "Chord release behaviour must be one of:\n\
-                first-release | all-released"
-                )
-            })?;
-
-        let disabled_layers = &chunk[4];
-        let disabled_layers = disabled_layers
-            .list(s.vars())
-            .map(|dl| {
-                dl.iter()
-                    .try_fold(vec![], |mut layers, layer| -> Result<Vec<u16>> {
-                        let l_idx = layer
-                            .atom(s.vars())
-                            .and_then(|l| s.layer_idxs.get(l))
-                            .ok_or_else(|| anyhow_expr!(layer, "Not a known layer name."))?;
-                        layers.push((*l_idx) as u16);
-                        Ok(layers)
-                    })
-            })
-            .ok_or_else(|| {
-                anyhow_expr!(
-                    disabled_layers,
-                    "Disabled layers must be a list of layer names"
-                )
-            })??;
-        let chord = ChordV2 {
-            action,
-            participating_keys: s.a.sref_vec(participants.clone()),
-            pending_duration: timeout,
-            disabled_layers: s.a.sref_vec(disabled_layers),
-            release_behaviour,
-        };
-        let chord = s.a.sref(chord);
-        for pkey in participants.iter().copied() {
-            log::trace!("chord for key:{pkey:?} > {chord:?}");
-            chords_container
-                .mapping
-                .entry(pkey)
-                .or_insert(ChordsForKey { chords: vec![] })
-                .chords
-                .push(chord);
+        } else {
+            for pkey in chord.participating_keys.iter().copied() {
+                //log::trace!("chord for key:{pkey:?} > {chord:?}");
+                chords_container
+                    .mapping
+                    .entry(pkey)
+                    .or_insert(ChordsForKey { chords: vec![] })
+                    .chords
+                    .push(s.a.sref(chord.clone()));
+            }
         }
     }
     let rem = chunks.remainder();
@@ -111,4 +80,235 @@ pub(crate) fn parse_defchordv2(
         );
     }
     Ok(chords_container)
+}
+
+fn parse_single_chord(
+    chunk: &[SExpr],
+    s: &ParserState,
+) -> Result<ChordV2<'static, KanataCustom>> {
+    let keys = &chunk[0];
+    let key_strings = keys
+        .list(s.vars())
+        .map(|keys| {
+            keys.iter()
+                .map(|key| {
+                    key.atom(s.vars()).ok_or_else(|| {
+                        anyhow_expr!(key, "The first chord item must be a list of keys.")
+                    })
+                })
+                .collect::<Vec<_>>()
+        })
+        .ok_or_else(|| anyhow_expr!(keys, "The first chord item must be a list of keys."))?
+        .into_iter()
+        .collect::<Result<Vec<_>>>()?;
+    if key_strings.len() < 2 {
+        bail_expr!(keys, "The minimum number of participating chord keys is 2");
+    }
+    let participants = parse_participating_keys(key_strings)?;
+
+    let action = parse_action(&chunk[1], s)?;
+    let timeout = parse_timeout(&chunk[2], s)?;
+    let release_behaviour = parse_release_behaviour(&chunk[3], s)?;
+    let disabled_layers = parse_disabled_layers(&chunk[4], s)?;
+    let chord: ChordV2<'static, KanataCustom> = ChordV2 {
+        action,
+        participating_keys: s.a.sref_vec(participants.clone()),
+        pending_duration: timeout,
+        disabled_layers: s.a.sref_vec(disabled_layers),
+        release_behaviour,
+    };
+    return Ok(s.a.sref(chord).clone());
+}
+
+fn parse_participating_keys(key_strings: Vec<&str>) -> Result<Vec<u16>> {
+    let mut participants =
+        key_strings
+            .iter()
+            .try_fold(vec![], |mut keys, key| -> Result<Vec<u16>> {
+                let k = str_to_oscode(key).ok_or_else(|| {
+                    ParseError::new_without_span(format!("Invalid keycode: '{}'", key))
+                })?;
+                keys.push(k.into());
+                Ok(keys)
+            })?;
+    participants.sort();
+    Ok(participants)
+}
+
+fn parse_timeout(chunk: &SExpr, s: &ParserState) -> Result<u16> {
+    let timeout = parse_non_zero_u16(&chunk, s, "chord timeout")?;
+    Ok(timeout)
+}
+
+fn parse_release_behaviour(
+    release_behaviour_string: &SExpr,
+    s: &ParserState,
+) -> Result<ReleaseBehaviour> {
+    let release_behaviour = release_behaviour_string
+        .atom(s.vars())
+        .and_then(|r| {
+            Some(match r {
+                "first-release" => ReleaseBehaviour::OnFirstRelease,
+                "all-released" => ReleaseBehaviour::OnLastRelease,
+                _ => return None,
+            })
+        })
+        .ok_or_else(|| {
+            anyhow_expr!(
+                release_behaviour_string,
+                "Chord release behaviour must be one of:\n\
+                first-release | all-released"
+            )
+        })?;
+    Ok(release_behaviour)
+}
+
+fn parse_disabled_layers(disabled_layers: &SExpr, s: &ParserState) -> Result<Vec<u16>> {
+    let disabled_layers = disabled_layers
+        .list(s.vars())
+        .map(|dl| {
+            dl.iter()
+                .try_fold(vec![], |mut layers, layer| -> Result<Vec<u16>> {
+                    let l_idx = layer
+                        .atom(s.vars())
+                        .and_then(|l| s.layer_idxs.get(l))
+                        .ok_or_else(|| anyhow_expr!(layer, "Not a known layer name."))?;
+                    layers.push((*l_idx) as u16);
+                    Ok(layers)
+                })
+        })
+        .ok_or_else(|| {
+            anyhow_expr!(
+                disabled_layers,
+                "Disabled layers must be a list of layer names"
+            )
+        })??;
+    Ok(disabled_layers)
+}
+fn parse_chord_file(
+    chunk: &[SExpr],
+    s: &ParserState,
+) -> Result<Vec<Result<ChordV2<'static, KanataCustom>>>> {
+    let file_name = chunk[0].list(s.vars()).unwrap()[1].atom(s.vars()).unwrap();
+    let timeout = parse_timeout(&chunk[2], s)?;
+    let release_behaviour = parse_release_behaviour(&chunk[3], s)?;
+    let disabled_layers = parse_disabled_layers(&chunk[4], s)?;
+    let input_data = fs::read_to_string(file_name).expect(format!("Unable to read file {}", file_name).as_str());
+    let parsed_chords = parse_input(&input_data);
+    let mapped_chords = map_to_physical_keys(parsed_chords, timeout, release_behaviour, disabled_layers, s);
+    return Ok(mapped_chords);
+}
+
+fn parse_input(input: &str) -> Vec<ChordDefinition> {
+    input
+        .lines()
+        .filter(|line| !line.trim().is_empty() && !line.trim().starts_with("//"))
+        .filter_map(|line| {
+            let caps = line.split("\t").collect::<Vec<&str>>();
+            if caps.len() < 2 {
+                return None;
+            }
+            let keys = caps[0]
+                .chars()
+                .map(|k| k.to_string())
+                .collect::<Vec<String>>();
+            let action = caps[1]
+                .chars()
+                .map(|k| k.to_string())
+                .collect::<Vec<String>>();
+            Some(ChordDefinition {
+                keys,
+                action,
+            })
+        })
+        .collect()
+}
+
+fn map_to_physical_keys(
+    chords: Vec<ChordDefinition>,
+    timeout: u16,
+    release_behaviour: ReleaseBehaviour,
+    disabled_layers: Vec<u16>,
+    s: &ParserState,
+) -> Vec<Result<ChordV2<'static, &'static &'static [&'static custom_action::CustomAction]>>> {
+    let target_map = s.layers[0][0]
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, layout)| {
+            layout
+                .key_codes()
+                .next()
+                .map(|kc| kc.to_string().to_lowercase())
+                .zip(
+                    idx.try_into()
+                        .ok()
+                        .and_then(|num| OsCode::from_u16(num))
+                        .map(|osc| osc.to_string().to_lowercase()),
+                )
+        })
+        .collect::<Vec<_>>()
+        .into_iter()
+        .chain(vec![(" ".to_string(), "spc".to_string())].into_iter())
+        .collect::<HashMap<_, _>>();
+    let postprocess_map: HashMap<String, String> =
+        [("semicolon", ";"), ("colon", "S-."), ("slash", "/"), ("apostrophe", "'"), (" ", "spc")]
+            .iter()
+            .cloned()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+    let output_key_map: HashMap<String, String> = [(" ", "spc")]
+        .iter()
+        .cloned()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+    chords
+        .into_iter()
+        .map(|chord| {
+            let keys = chord
+                .keys
+                .iter()
+                .map(|key| {
+                    let key = key.to_string();
+                    let converted = target_map.get(&key).unwrap_or(&key);
+                    postprocess_map.get(converted).unwrap_or(converted).to_string()
+                })
+                .collect::<Vec<String>>();
+            let sexprs = chord
+                .action
+                .iter()
+                .map(|key| output_key_map.get(key).unwrap_or(key).clone())
+                .map(|key| {
+                    if key.chars().next().map_or(false, |c| c.is_uppercase()) {
+                        "S-".to_string() + &key.to_lowercase()
+                    } else {
+                        key.to_lowercase().clone()
+                    }
+                })
+                .map(|key| {
+                    SExpr::Atom(Spanned {
+                        t: key,
+                        span: Default::default(),
+                    })
+                }).collect_vec();
+            let action = parse_macro(&sexprs, s, RepeatMacro::No)?;
+            let participating_ks = parse_participating_keys(keys.iter().map(String::as_str).collect::<Vec<&str>>())?;
+            let disabled_layers_cloned = disabled_layers.clone();
+            let chord: ChordV2<'static, KanataCustom> = ChordV2 {
+                participating_keys: &s.a.sref(participating_ks),
+                action: &s.a.sref(action),
+                pending_duration: timeout,
+                disabled_layers: &s.a.sref(disabled_layers_cloned),
+                release_behaviour: release_behaviour,
+            };
+            Ok(s.a.sref(chord).clone())
+        })
+        .collect()
+}
+
+// Define necessary data structures
+
+#[derive(Debug)]
+struct ChordDefinition {
+    keys: Vec<String>,
+    action: Vec<String>,
 }
