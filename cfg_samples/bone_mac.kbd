@@ -1,6 +1,7 @@
 (defcfg
   concurrent-tap-hold yes
   chords-v2-min-idle-experimental 100
+  sequence-input-mode visible-backspaced
 )
 
 (defsrc
@@ -8,7 +9,7 @@
   grv        1    2    3    4    5    6    7    8    9    0    -    =
   tab        q    w    e    r    t    y    u    i    o    p    [    ]
   caps       a    s    d    f    g    h    j    k    l    ;    '    \ ret
-  lsft       z    x    c    v    b    n    m    ,    .    /    rsft up
+  lsft nubs  z    x    c    v    b    n    m    ,    .    /    rsft up
        lctl  lalt lmet           spc            rmet ralt      left down rght
 )
 
@@ -17,7 +18,7 @@
   _          1    2    3    4    5    6    7    8    9    0    -    =
   tab        j    d    u    a    x    p    h    l    m    w    _    rctl
   @lv3       @cs  @t3  @i4  e    o    b    n    @r4  @s3  @gs  q    @lv3 ret
-  _          f    v    @ü   @ä   @ö   @y   @z   ,    .    k    _    _
+  _    _     f    v    @ü   @ä   @ö   @y   @z   ,    .    k    _    _
        lctl  @alt lmet          spc             @lv4 ralt      _    _    _
 )
 
@@ -33,9 +34,9 @@
 (deflayer level3
              A-f1 A-f2 A-f3 A-f4 A-f5 A-f6 A-f7 A-f8 A-f9 A-f10 A-f11 A-f12
   _          1    2    3    4    5    6    7    8    9    0    -    =
-  _          @…   @\_  @[   @]   _   @!   @<   @>   @=   @&   @€   /
+  _          @…   @\_  @[   @]   @^  @!   @<   @>   @=   @&   @€   /
   XX         @bsl @/   @{   @}   @*  @?   @kau @kzu @-   @:   @@   XX A-ret
-  _          _   @$   @|   @~   @`   @+   @%   @dqu @'   @;   _    M-up
+  _    _     @#   @$   @|   @~   @`  @+   @%   @dqu @'   @;   _    M-up
        _     _    _              _              _   _    M-left M-down M-right
 )
 
@@ -44,7 +45,7 @@
   _         1    2    3    4    5    6    7    8    9    0    -    =
   _         pgup bspc up   del  pgdn lrld 7    8    9    +    -    rctl
   lalt      home lft  down rght end  _    4    5    6    ,    .    ralt M-ret
-  lsft      esc  tab  ins  ret  f1   @:   1    2    3    ;    rsft _
+  lsft XX   esc  tab  ins  ret  f1   @:   1    2    3    ;    rsft _
        _    _    _              0              XX   _    _    _    _
 )
 
@@ -53,7 +54,7 @@
   A-grv      1    2    3    4    5    6    7    8    9    0    -    =
   A-tab      A-j  A-d  A-u  A-a  A-x  A-p  h    A-l  A-m  A-w  _    rctl
   _          A-c  A-t  A-i  A-e  A-o  A-b  A-n  A-r  A-s  A-g  A-q  @lv3 ret
-  _          A-f  A-v  A-u  A-a  A-o  A-y  A-z  A-,  A-.  A-k    @lv4 _
+  _    _     A-f  A-v  A-u  A-a  A-o  A-y  A-z  A-,  A-.  A-k    @lv4 _
        lctl  @alt lmet          spc             @lv4 ralt      _    _    _
 )
 
@@ -83,11 +84,40 @@
   alt (layer-toggle alt)
 )
 
+;;(defseq git-status (g s t))
+;;(deffakekeys git-status (macro g i t spc s t a t u s))
+;;(defalias dot-sequence (macro (sequence 250) 10 .))
+;;(defalias dot-sequence-inputmode (macro (sequence 250 hidden-delay-type) 10 .))
+;;
+;;(defseq
+;;    dotcom (. S-3)
+;;    dotorg (. S-4)
+;;)
+;;(deffakekeys
+;;    dotcom (macro . c o m)
+;;    dotorg (macro . o r g)
+;;)
+;;;; There are special keys that you can assign in your actions which will
+;;;; never output events to your operating system, but which you can use
+;;;; in sequences. They are named: nop0-nop9.
+;;(defseq
+;;    dotcom (nop0 nop1)
+;;    dotorg (nop8 nop9)
+;;)
+;;;; A key list within O-(...) signifies simultaneous presses.
+;;(defseq
+;;    dotcom (O-(. c m))
+;;    dotorg (O-(. r g))
+;;)
+
 (defalias
   ;; aliases for German QWERTZ
   ;; When I want to have the thing on the left,
   ;; I would have to type at the position of the thing on the right
   ;; on the defsrc (US layout)
+  ;; So, if I want to define one, I need to check how I would type it on a German layout
+  ;; and then scroll up to the defsrc and look what US key would be in that place.
+  ;; That's what I put on the right side.
   ä '
   ö ;
   ü [
@@ -100,6 +130,7 @@
   % S-5
   { RA-8
   } RA-9
+  ^ nubs
   ! S-1
   < `
   > S-`
@@ -120,9 +151,10 @@
   [ RA-5
   ] RA-6
   ~ RA-n
-  ` /
+  ` S-=
   $ S-4
   + ]
+  # \
   dqu S-2
   ' S-\
   \ RA-min
@@ -150,5 +182,7 @@
 )
 (defalias unused (switch ((key-timing 1 gt 200)) 0 break))
 
-(include chords.kbd)
+(defchordsv2-experimental
+  (include /Users/martin/Workspaces/devtools/kanata/cfg_samples/chords.txt) ()     50 all-released  ()
+)
 

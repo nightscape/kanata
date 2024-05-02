@@ -57,7 +57,7 @@ pub(crate) fn parse_defchordv2(
         if !all_participating_key_sets.insert(chord.participating_keys) {
             ParseError::new_without_span(
                 "This chord has previously been defined.\n\
-                Only one set of chords must exist for one key combination."
+                Only one set of chords must exist for one key combination.",
             );
         } else {
             for pkey in chord.participating_keys.iter().copied() {
@@ -82,10 +82,7 @@ pub(crate) fn parse_defchordv2(
     Ok(chords_container)
 }
 
-fn parse_single_chord(
-    chunk: &[SExpr],
-    s: &ParserState,
-) -> Result<ChordV2<'static, KanataCustom>> {
+fn parse_single_chord(chunk: &[SExpr], s: &ParserState) -> Result<ChordV2<'static, KanataCustom>> {
     let keys = &chunk[0];
     let key_strings = keys
         .list(s.vars())
@@ -193,9 +190,16 @@ fn parse_chord_file(
     let timeout = parse_timeout(&chunk[2], s)?;
     let release_behaviour = parse_release_behaviour(&chunk[3], s)?;
     let disabled_layers = parse_disabled_layers(&chunk[4], s)?;
-    let input_data = fs::read_to_string(file_name).expect(format!("Unable to read file {}", file_name).as_str());
+    let input_data =
+        fs::read_to_string(file_name).expect(format!("Unable to read file {}", file_name).as_str());
     let parsed_chords = parse_input(&input_data);
-    let mapped_chords = map_to_physical_keys(parsed_chords, timeout, release_behaviour, disabled_layers, s);
+    let mapped_chords = map_to_physical_keys(
+        parsed_chords,
+        timeout,
+        release_behaviour,
+        disabled_layers,
+        s,
+    );
     return Ok(mapped_chords);
 }
 
@@ -216,10 +220,7 @@ fn parse_input(input: &str) -> Vec<ChordDefinition> {
                 .chars()
                 .map(|k| k.to_string())
                 .collect::<Vec<String>>();
-            Some(ChordDefinition {
-                keys,
-                action,
-            })
+            Some(ChordDefinition { keys, action })
         })
         .collect()
 }
@@ -250,17 +251,33 @@ fn map_to_physical_keys(
         .into_iter()
         .chain(vec![(" ".to_string(), "spc".to_string())].into_iter())
         .collect::<HashMap<_, _>>();
-    let postprocess_map: HashMap<String, String> =
-        [("semicolon", ";"), ("colon", "S-."), ("slash", "/"), ("apostrophe", "'"), (" ", "spc")]
-            .iter()
-            .cloned()
-            .map(|(k, v)| (k.to_string(), v.to_string()))
-            .collect();
+    let postprocess_map: HashMap<String, String> = [
+        ("semicolon", ";"),
+        ("colon", "S-."),
+        ("slash", "/"),
+        ("apostrophe", "'"),
+        (" ", "spc"),
+    ]
+    .iter()
+    .cloned()
+    .map(|(k, v)| (k.to_string(), v.to_string()))
+    .collect();
     let output_key_map: HashMap<String, String> = [(" ", "spc")]
         .iter()
         .cloned()
         .map(|(k, v)| (k.to_string(), v.to_string()))
         .collect();
+    let alias_map = s
+        .aliases
+        .iter()
+        .filter_map(|(k, v)| {
+            if k.len() != 1 {
+                None
+            } else {
+                Some((k.to_string(), v.key_codes().collect::<Vec<KeyCode>>()))
+            }
+        })
+        .collect::<HashMap<_, _>>();
     chords
         .into_iter()
         .map(|chord| {
@@ -270,28 +287,29 @@ fn map_to_physical_keys(
                 .map(|key| {
                     let key = key.to_string();
                     let converted = target_map.get(&key).unwrap_or(&key);
-                    postprocess_map.get(converted).unwrap_or(converted).to_string()
+                    postprocess_map
+                        .get(converted)
+                        .unwrap_or(converted)
+                        .to_string()
                 })
                 .collect::<Vec<String>>();
-            let sexprs = chord
+            let sequence_events = chord
                 .action
                 .iter()
-                .map(|key| output_key_map.get(key).unwrap_or(key).clone())
-                .map(|key| {
-                    if key.chars().next().map_or(false, |c| c.is_uppercase()) {
-                        "S-".to_string() + &key.to_lowercase()
-                    } else {
-                        key.to_lowercase().clone()
-                    }
+                .flat_map(|key| {
+                    output_key_map.get(key).unwrap_or(key).chars()
                 })
-                .map(|key| {
-                    SExpr::Atom(Spanned {
-                        t: key,
-                        span: Default::default(),
-                    })
-                }).collect_vec();
-            let action = parse_macro(&sexprs, s, RepeatMacro::No)?;
-            let participating_ks = parse_participating_keys(keys.iter().map(String::as_str).collect::<Vec<&str>>())?;
+                .flat_map(|c| {
+                    alias_map
+                        .get(&c.to_string())
+                        .map(|codes| codes.iter().flat_map(|code| vec!(SequenceEvent::Press(*code), SequenceEvent::Release(*code))).collect::<Vec<_>>())
+                        .unwrap_or_else(Vec::new)
+                })
+                .collect::<Vec<SequenceEvent<_>>>();
+            let events_slice = s.a.sref(s.a.sref(s.a.sref_vec(sequence_events)));
+            let action = Action::Sequence { events: events_slice };
+            let participating_ks =
+                parse_participating_keys(keys.iter().map(String::as_str).collect::<Vec<&str>>())?;
             let disabled_layers_cloned = disabled_layers.clone();
             let chord: ChordV2<'static, KanataCustom> = ChordV2 {
                 participating_keys: &s.a.sref(participating_ks),
