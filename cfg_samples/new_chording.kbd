@@ -1,0 +1,17 @@
+(defsrc f1)
+(deflayer base lrld)
+(defcfg process-unmapped-keys yes
+	sequence-input-mode visible-backspaced
+	concurrent-tap-hold true)
+(deftemplate seq (vk-name in out)
+	(defvirtualkeys $vk-name $out)
+	(defseq $vk-name $in))
+
+(defchordsv2-experimental
+  (d a y) (macro sldr d (unshift a y) spc nop0) 200 first-release ()
+  (h l o) (macro h (unshift e l) 5 (unshift l o) sldr spc nop0) 200 first-release ()
+)
+(t! seq Monday (d a y spc nop0 O-(m o n)) (macro S-m (unshift o n d a y) nop9 sldr spc nop0))
+(t! seq Tuesday (d a y spc nop0 O-(t u e)) (macro S-t (unshift u e s d a y) nop9 sldr spc nop0))
+(t! seq DelSpace_. (spc nop0 .) (macro .))
+(t! seq DelSpace_; (spc nop0 ;) (macro ;))

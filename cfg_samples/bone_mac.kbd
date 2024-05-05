@@ -1,87 +1,113 @@
 (defcfg
-  concurrent-tap-hold yes
   chords-v2-min-idle-experimental 100
   sequence-input-mode visible-backspaced
+  ;;process-unmapped-keys yes
+	concurrent-tap-hold true)
+(deftemplate seq (vk-name in out)
+	(defvirtualkeys $vk-name $out)
+	(defseq $vk-name $in))
+
+(defvirtualkeys rls-sft (multi (release-key lsft)(release-key rsft)))
+(defvar rls-sft (on-press tap-vkey rls-sft))
+(deftemplate rls-sft () $rls-sft 5)
+
+(deflocalkeys-macos
+  ß    12
+  ´    13
+  z    21
+  ü    26
+  +    27
+  ö    39
+  ä    40
+  <    41
+  #    43
+  y    44
+  -    53
+  ^    86
 )
 
 (defsrc
-             f1   f2   f3   f4   f5   f6   f7   f8   f9   f10  f11  f12
-  grv        1    2    3    4    5    6    7    8    9    0    -    =
-  tab        q    w    e    r    t    y    u    i    o    p    [    ]
-  caps       a    s    d    f    g    h    j    k    l    ;    '    \ ret
-  lsft nubs  z    x    c    v    b    n    m    ,    .    /    rsft up
-       lctl  lalt lmet           spc            rmet ralt      left down rght
+  ⎋         f1   f2   f3   f4   f5   f6   f7   f8   f9   f10  f11  f12
+  ^         1    2    3    4    5    6    7    8    9    0    ß    ´    ⌫
+  ↹         q    w    e    r    t    z    u    i    o    p    ü    +
+  ⇪         a    s    d    f    g    h    j    k    l    ö    ä    #    ↩
+ ‹⇧   <     y    x    c    v    b    n    m    ,    .    -         ▲    ⇧›
+  fn       ‹⌃   ‹⌥   ‹⌘              ␣              ⌘›   ⌥›   ◀    ▼    ▶
 )
 
 (deflayer level1
-             _    _    _    _    _    _    _    _    _    _    _    _
-  _          1    2    3    4    5    6    7    8    9    0    -    =
-  tab        j    d    u    a    x    p    h    l    m    w    _    rctl
-  @lv3       @cs  @t3  @i4  e    o    b    n    @r4  @s3  @gs  q    @lv3 ret
-  _    _     f    v    @ü   @ä   @ö   @y   @z   ,    .    k    _    _
-       lctl  @alt lmet          spc             @lv4 ralt      _    _    _
+  _          _    _    _    _    _    _    _    _    _    _    _    _
+  _          _    _    _    _    _    _    _    _    _    _    -    =    _
+  _          j    d    u    a    x    p    h    l    m    w    ß    rctl
+  @lv3       c    t    i    e    o    b    n    r    s    g    q    @lv3 ret
+  _    _     f    v    ü    ä    ö    y    z   ,    .    k         _    _
+  @fn  _     @alt _             spc             @lv4 _         _    _    _
 )
 
 ;; (deflayer level2
 ;;               S-f1 S-f2 S-f3 S-f4 S-f5 S-f6 S-f7 S-f8 S-f9 S-f10 S-f11 S-f12
-;;   _          1    2    3    4    5    6    7    8    9    0    -    =
+;;   _           1    2    3    4    5    6    7    8    9    0    -    =
 ;;   S-tab       J    D    U    A    X    P    H    L    M    W     _     ´
 ;;   @lv5        C    T    I    E    O    B    N    R    S    G     Q     @lv5 S-ret
-;;   XX          F    V    Ü    Ä    Ö    S-@y S-@z    -    •    K  XX    S-up
+;;   ✗           F    V    Ü    Ä    Ö    S-@y S-@z    -    •    K  ✗     S-up
 ;;        lctl   lalt S-lmet         spc           S-@lv4 ralt      S-left S-down S-rght
 ;; )
 
 (deflayer level3
-             A-f1 A-f2 A-f3 A-f4 A-f5 A-f6 A-f7 A-f8 A-f9 A-f10 A-f11 A-f12
-  _          1    2    3    4    5    6    7    8    9    0    -    =
-  _          @…   @\_  @[   @]   @^  @!   @<   @>   @=   @&   @€   /
-  XX         @bsl @/   @{   @}   @*  @?   @kau @kzu @-   @:   @@   XX A-ret
-  _    _     @#   @$   @|   @~   @`  @+   @%   @dqu @'   @;   _    M-up
-       _     _    _              _              _   _    M-left M-down M-right
+  _          A-f1 A-f2 A-f3 A-f4 A-f5 A-f6 A-f7 A-f8 A-f9 A-f10 A-f11 A-f12
+  _          _    _    _    _    _    _    _    _    _    _     _     _     _
+  _          RA-. S--  RA-5 RA-6 ^    S-1  <    S-<  S-0  S-6  RA-e   /
+  ✗         A-S-7 S-7  RA-8 RA-9 S-+ S-ß   S-8  S-9  -    S-.  RA-l XX A-ret
+  _    _     #    S-4  RA-7 RA-n S-´ +     S-5  S-2  S-#  S-,        M-up     _
+  _    _     _    @sml               _              _    _    M-left M-down M-right
 )
 
 (deflayer level4
-            M-f1 M-f2 M-f3 M-f4 M-f5 M-f6 M-f7 M-f8 M-f9 M-f10 M-f11 M-f12
-  _         1    2    3    4    5    6    7    8    9    0    -    =
+  _         M-f1 M-f2 M-f3 M-f4 M-f5 M-f6 M-f7 M-f8 M-f9 M-f10 M-f11 M-f12
+  _         1    2    3    4    5    6    7    8    9    0    -    =  _
   _         pgup bspc up   del  pgdn lrld 7    8    9    +    -    rctl
   lalt      home lft  down rght end  _    4    5    6    ,    .    ralt M-ret
-  lsft XX   esc  tab  ins  ret  f1   @:   1    2    3    ;    rsft _
-       _    _    _              0              XX   _    _    _    _
+  lsft ✗    esc  tab  ins  ret  f1   S-.  1    2    3    ;         _    _
+  _    _    _    _              0              ✗    _    _    _    _
 )
 
 (deflayer alt
-             _    _    _    _    _    _    _    _    _    _    _    _
-  A-grv      1    2    3    4    5    6    7    8    9    0    -    =
-  A-tab      A-j  A-d  A-u  A-a  A-x  A-p  h    A-l  A-m  A-w  _    rctl
   _          A-c  A-t  A-i  A-e  A-o  A-b  A-n  A-r  A-s  A-g  A-q  @lv3 ret
+  _          _    _    _    _    _    _    _    _    _    _    _    _
+  A-grv      1    2    3    4    5    6    7    8    9    0    -    =    _
+  A-tab      A-j  A-d  A-u  A-a  A-x  A-p  h    A-l  A-m  A-w  _    rctl
   _    _     A-f  A-v  A-u  A-a  A-o  A-y  A-z  A-,  A-.  A-k    @lv4 _
-       lctl  @alt lmet          spc             @lv4 ralt      _    _    _
+  _    lctl  @alt lmet          spc             @lv4 ralt      _    _    _
 )
 
 
-
-;; (deflayer second_function
-;;        brdn brup lp   mctl bldn blup prev pp   next mute vold volu
-;;   _    _    _    _    _    _    _    _    _    _    _    _    _    _
-;;   _    _    _    _    _    _    _    _    _    _    _    _    _    _
-;;   _    _    _    _    _    _    _    _    _    _    _    _    _
-;;   _        _    _    _    _    _    _    _    _    _    _    _
-;;     _    _    _              _              _    _    _    _
-;; )
+(defalias
+  😀 (🔣 😀)
+  🙁 (unicode 🙁)
+)
+(deflayer smileys
+  _    _    _    _    _    _    _    _    _    _    _    _    _
+  _    _    _    _    _    _    _    _    _    _    _    _    _    _
+  _    _    @😀    _    _    _    _    _    _    _    _    _    _    _
+  _    _    _    _    _    _    _    _    _    _    _    _    _    _
+  _        _    _    _    _    _    _    _    _    _    _    _     _
+  _  _    _    _              _              _    _    _    _       _
+)
+(deflayer second_function
+  _    🔅   🔆   _    _ bldn blup ◀◀  ▶⏸   ▶▶  🔇  🔈−  🔈+
+  _    _    _    _    _    _    _    _    _    _    _    _    _    _
+  _    _    _    _    _    _    _    _    _    _    _    _    _    _
+  _    _    _    _    _    _    _    _    _    _    _    _    _    _
+  _        _    _    _    _    _    _    _    _    _    _    _     _
+  _  _    _    _              _              _    _    _    _       _
+)
 
 (defalias
-  fn f
-  ;; Switch to QWERTZ layout (and back)
-  qwe (layer-switch level1) ;; Set qwertz as the base layer
-  neo (layer-switch level1) ;; Set neo level1 as the base layer
-
-  q3 (layer-toggle level1)
-
-  ;; Bind lvX to a button that switches to a layer
-  ;; lv2 (layer-toggle level2)
-  lv3 (layer-toggle level3)
-  lv4 (layer-toggle level4)
-  alt (layer-toggle alt)
+  fn  (layer-while-held second_function)
+  lv3 (layer-while-held level3)
+  lv4 (layer-while-held level4)
+  alt (layer-while-held alt)
+  sml (layer-while-held smileys)
 )
 
 ;;(defseq git-status (g s t))
@@ -110,79 +136,14 @@
 ;;    dotorg (O-(. r g))
 ;;)
 
-(defalias
-  ;; aliases for German QWERTZ
-  ;; When I want to have the thing on the left,
-  ;; I would have to type at the position of the thing on the right
-  ;; on the defsrc (US layout)
-  ;; So, if I want to define one, I need to check how I would type it on a German layout
-  ;; and then scroll up to the defsrc and look what US key would be in that place.
-  ;; That's what I put on the right side.
-  ä '
-  ö ;
-  ü [
-
-  y z
-  z y
-
-  … RA-.
-  @ RA-l
-  % S-5
-  { RA-8
-  } RA-9
-  ^ nubs
-  ! S-1
-  < `
-  > S-`
-  = S-0
-  & S-6
-  € RA-e
-
-  | RA-7
-  kau S-8
-  kzu S-9
-  * S-]
-  ? S--
-  / S-7
-  : S-.
-  - /
-  bsl A-S-7
-  \_ S-/
-  [ RA-5
-  ] RA-6
-  ~ RA-n
-  ` S-=
-  $ S-4
-  + ]
-  # \
-  dqu S-2
-  ' S-\
-  \ RA-min
-  ; S-,
-)
-
-(defalias
-  gs g
-  aw a
-  ec e
-  i4 i
-  j2 j
-  s3 s
-  ,3 ,
-
-  t3  t
-  wa  w
-  r4  r
-  rc  r
-  nw  n
-  cs  c
-
-  ;; ralt = compose key when tapped, rctl when held down
-  ctlc ralt
-)
 (defalias unused (switch ((key-timing 1 gt 200)) 0 break))
 
-(defchordsv2-experimental
-  (include /Users/martin/Workspaces/devtools/kanata/cfg_samples/chords.txt) ()     50 all-released  ()
-)
+;;(defchordsv2-experimental
+;;  (include /Users/martin/Workspaces/devtools/kanata/cfg_samples/chords.txt) ()     50 all-released  ()
+;;)
+(include chords.kbd)
 
+(t! seq Monday (d a y spc nop0 O-(o g j)) (macro S-m $rls-sft o n d a y nop9 sldr spc nop0))
+(t! seq Tuesday (d a y spc nop0 O-(t u e)) (macro S-t $rls-sft u e s d a y nop9 sldr spc nop0))
+(t! seq DelSpace_. (spc nop0 .) (macro .))
+(t! seq DelSpace_; (spc nop0 ;) (macro ;))
