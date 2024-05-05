@@ -219,10 +219,33 @@ impl KbdOut {
         self.write_key(key, KeyValue::Release)
     }
 
-    /// Send using C-S-u + <unicode hex number> + spc
+    /// Send using AppleScript to input Unicode characters directly.
     pub fn send_unicode(&mut self, c: char) -> Result<(), io::Error> {
-        log::error!("Unable to send unicode {c}, unsupported functionality");
-        todo!()
+        use std::process::Command;
+        let unicode_string = c.escape_unicode().to_string();
+        let apple_script = format!(
+            "tell application \"System Events\" to keystroke \"{}\"",
+            unicode_string
+        );
+        let output = Command::new("osascript")
+            .arg("-e")
+            .arg(apple_script)
+            .output();
+
+        match output {
+            Ok(output) if output.status.success() => Ok(()),
+            Ok(output) => Err(io::Error::new(
+                io::ErrorKind::Other,
+                format!(
+                    "Failed to send unicode: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                ),
+            )),
+            Err(e) => Err(io::Error::new(
+                io::ErrorKind::Other,
+                format!("Failed to execute osascript: {}", e),
+            )),
+        }
     }
 
     pub fn scroll(&mut self, _direction: MWheelDirection, _distance: u16) -> Result<(), io::Error> {
