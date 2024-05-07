@@ -67,6 +67,7 @@ kanata-tcp-protocol = { path = "tcp_protocol" }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 karabiner-driverkit = "0.1.3"
+clipboard = "*"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 signal-hook = "0.3.14"

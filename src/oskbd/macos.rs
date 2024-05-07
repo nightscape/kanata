@@ -8,7 +8,10 @@
 use super::*;
 use crate::kanata::CalculatedMouseMove;
 use crate::oskbd::KeyEvent;
+extern crate clipboard;
 use anyhow::anyhow;
+use clipboard::ClipboardContext;
+use clipboard::ClipboardProvider;
 use kanata_parser::custom_action::*;
 use kanata_parser::keys::*;
 use karabiner_driverkit::*;
