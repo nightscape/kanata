@@ -1,5 +1,5 @@
 (defcfg
-  chords-v2-min-idle-experimental 100
+  chords-v2-min-idle-experimental 200
   sequence-input-mode visible-backspaced
   ;;process-unmapped-keys yes
 	concurrent-tap-hold true)
@@ -40,8 +40,8 @@
   _          _    _    _    _    _    _    _    _    _    _    -    =    _
   _          j    d    u    a    x    p    h    l    m    w    ß    rctl
   @lv3       c    t    i    e    o    b    n    r    s    g    q    @lv3 ret
-  _    _     f    v    ü    ä    ö    y    z   ,    .    k         _    _
-  @fn  _     @alt _             spc             @lv4 _         _    _    _
+  @osf _     f    v    ü    ä    ö    y    z   ,    .    k         _    @osf
+  @fn  _     _    _             spc             @lv4 _         _    _    _
 )
 
 ;; (deflayer level2
@@ -59,7 +59,7 @@
   _          RA-. S--  RA-5 RA-6 ^    S-1  <    S-<  S-0  S-6  RA-e   /
   ✗         A-S-7 S-7  RA-8 RA-9 S-+ S-ß   S-8  S-9  -    S-.  RA-l XX A-ret
   _    _     #    S-4  RA-7 RA-n S-´ +     S-5  S-2  S-#  S-,        M-up     _
-  _    _     _    @sml               _              _    _    M-left M-down M-right
+  _    _     _    _                  _              _    _    M-left M-down M-right
 )
 
 (deflayer level4
@@ -108,6 +108,7 @@
   lv4 (layer-while-held level4)
   alt (layer-while-held alt)
   sml (layer-while-held smileys)
+  osf (one-shot-press 2000 lsft)
 )
 
 ;;(defseq git-status (g s t))
@@ -138,10 +139,10 @@
 
 (defalias unused (switch ((key-timing 1 gt 200)) 0 break))
 
-;;(defchordsv2-experimental
-;;  (include /Users/martin/Workspaces/devtools/kanata/cfg_samples/chords.txt) ()     50 all-released  ()
-;;)
-(include chords.kbd)
+(defchordsv2-experimental
+  (include /Users/martin/Workspaces/devtools/kanata/cfg_samples/chords.txt) ()     50 all-released  ()
+)
+;;(include chords.kbd)
 
 (t! seq Monday (d a y spc nop0 O-(o g j)) (macro S-m $rls-sft o n d a y nop9 sldr spc nop0))
 (t! seq Tuesday (d a y spc nop0 O-(t u e)) (macro S-t $rls-sft u e s d a y nop9 sldr spc nop0))

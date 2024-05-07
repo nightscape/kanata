@@ -212,15 +212,10 @@ fn parse_input(input: &str) -> Vec<ChordDefinition> {
             if caps.len() < 2 {
                 return None;
             }
-            let keys = caps[0]
-                .chars()
-                .map(|k| k.to_string())
-                .collect::<Vec<String>>();
-            let action = caps[1]
-                .chars()
-                .map(|k| k.to_string())
-                .collect::<Vec<String>>();
-            Some(ChordDefinition { keys, action })
+            Some(ChordDefinition {
+                keys: caps[0],
+                action: caps[1],
+            })
         })
         .collect()
 }
@@ -256,17 +251,28 @@ fn map_to_physical_keys(
         ("colon", "S-."),
         ("slash", "/"),
         ("apostrophe", "'"),
+        ("dot", "."),
         (" ", "spc"),
     ]
     .iter()
     .cloned()
     .map(|(k, v)| (k.to_string(), v.to_string()))
     .collect();
-    let output_key_map: HashMap<String, String> = [(" ", "spc")]
-        .iter()
-        .cloned()
-        .map(|(k, v)| (k.to_string(), v.to_string()))
-        .collect();
+    let process = |key: &str| {
+        let key = key.to_string();
+        let converted = &key; //target_map.get(&key).unwrap_or(&key);
+        postprocess_map
+            .get(converted)
+            .map(|c| c.to_string())
+            .unwrap_or_else(|| {
+                if converted.chars().all(|c| c.is_uppercase()) {
+                    format!("S-{}", converted.to_lowercase())
+                } else {
+                    converted.to_string()
+                }
+            })
+    };
+
     let alias_map = s
         .aliases
         .iter()
@@ -283,31 +289,47 @@ fn map_to_physical_keys(
         .map(|chord| {
             let keys = chord
                 .keys
-                .iter()
-                .map(|key| {
-                    let key = key.to_string();
-                    let converted = target_map.get(&key).unwrap_or(&key);
-                    postprocess_map
-                        .get(converted)
-                        .unwrap_or(converted)
-                        .to_string()
+                .chars()
+                .map(|c| {
+                    let c = c.to_string();
+                    target_map.get(&c).map(String::to_string).unwrap_or(c)
                 })
+                .map(|s| process(&s))
                 .collect::<Vec<String>>();
             let sequence_events = chord
                 .action
-                .iter()
-                .flat_map(|key| {
-                    output_key_map.get(key).unwrap_or(key).chars()
-                })
+                .chars()
+                .map(|c| process(c.to_string().as_str()))
                 .flat_map(|c| {
-                    alias_map
-                        .get(&c.to_string())
-                        .map(|codes| codes.iter().flat_map(|code| vec!(SequenceEvent::Press(*code), SequenceEvent::Release(*code))).collect::<Vec<_>>())
-                        .unwrap_or_else(Vec::new)
+                    parse_action_atom(
+                        &Spanned {
+                            t: c.to_string(),
+                            span: Span::default(),
+                        },
+                        s,
+                    )
+                    .unwrap()
+                    .key_codes()
+                    .flat_map(|code| vec![SequenceEvent::Press(code), SequenceEvent::Release(code)])
+                    .collect::<Vec<_>>()
                 })
                 .collect::<Vec<SequenceEvent<_>>>();
+            // Now insert a SequenceEvent::Release(Shift) after the second element of sequence_events:
+            let sequence_events = sequence_events
+                .into_iter()
+                .enumerate()
+                .flat_map(|(idx, event)| {
+                    if idx == 1 {
+                        vec![event, SequenceEvent::Release(KeyCode::LShift), SequenceEvent::Release(KeyCode::RShift)]
+                    } else {
+                        vec![event]
+                    }
+                })
+                .collect::<Vec<_>>();
             let events_slice = s.a.sref(s.a.sref(s.a.sref_vec(sequence_events)));
-            let action = Action::Sequence { events: events_slice };
+            let action = Action::Sequence {
+                events: events_slice,
+            };
             let participating_ks =
                 parse_participating_keys(keys.iter().map(String::as_str).collect::<Vec<&str>>())?;
             let disabled_layers_cloned = disabled_layers.clone();
@@ -326,7 +348,7 @@ fn map_to_physical_keys(
 // Define necessary data structures
 
 #[derive(Debug)]
-struct ChordDefinition {
-    keys: Vec<String>,
-    action: Vec<String>,
+struct ChordDefinition<'a> {
+    keys: &'a str,
+    action: &'a str,
 }
