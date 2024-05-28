@@ -32,7 +32,7 @@ fn simulate(cfg: &str, sim: &str) -> String {
                     k.tick_ms(tick, &None).unwrap();
                 }
                 "d" => {
-                    let key_code = str_to_oscode(val).expect("valid keycode");
+                    let key_code = str_to_oscode(val).expect(&format!("{} should be a valid keycode", val));
                     k.handle_input_event(&KeyEvent {
                         code: key_code,
                         value: KeyValue::Press,

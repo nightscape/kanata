@@ -275,3 +275,76 @@ fn sim_denies_transparent() {
         .map(|_| ())
         .expect_err("trans in defchordsv2 should error");
 }
+
+use std::env;
+use std::fs::File;
+use std::io::{self, BufRead};
+use std::path::Path;
+
+fn parse_input_file(file_path: &str) -> io::Result<String> {
+    let path = Path::new(file_path);
+    let file = File::open(&path)?;
+    let reader = io::BufReader::new(file);
+
+    let mut result = String::new();
+    let mut last_timestamp = 0;
+
+    for line in reader.lines() {
+        let line = line?;
+        let parts: Vec<&str> = line.split('\t').collect();
+
+        if parts.len() == 2 {
+            let timestamp = parts[0].parse().unwrap_or(0);
+            let delta_time = timestamp - last_timestamp;
+            last_timestamp = timestamp;
+
+            if !result.is_empty() {
+                result.push_str(&format!("t:{} ", delta_time));
+            }
+        };
+        let key_event = parts.last().unwrap();
+
+        if key_event.starts_with('*') {
+            break;
+        }
+        let shift_involved = key_event.starts_with("~+");
+        let action = if key_event.ends_with(" Up") { "u" } else { "d" };
+        let key = key_event
+            .trim_start_matches(&['~', '+'])
+            .trim_end_matches(" Up");
+        let key_action = if shift_involved {
+            format!("{}:ShiftLeft {}:{} ", action, action, key)
+        } else {
+            format!("{}:{} ", action, key)
+        };
+
+        result.push_str(&key_action);
+    }
+
+    Ok(result)
+}
+
+#[test]
+fn sim_zipchord() -> anyhow::Result<(), std::io::Error> {
+    let input_file = "/workspaces/kanata/a.in";
+    let test_input_string = parse_input_file(input_file)?;
+
+    println!("{}", test_input_string);
+    let chords_file = env::current_dir()?.join("cfg_samples").join("chords.tsv");
+    let config = format!(
+        "\
+    (defcfg process-unmapped-keys yes concurrent-tap-hold yes)
+    (defsrc)
+    (deflayer base)
+    (defchordsv2-experimental (include {}) () 50 first-release ())",
+        chords_file.display()
+    );
+    let res = simulate(&config, &test_input_string);
+    println!("{}", res);
+    let output_file = "/workspaces/kanata/a.out";
+    let test_output_string = parse_input_file(&output_file)?;
+    println!("{}", test_output_string);
+    assert_eq!(test_output_string, res);
+
+    Ok(())
+}

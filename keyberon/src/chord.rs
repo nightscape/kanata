@@ -137,6 +137,11 @@ pub struct ChordsV2<'a, T> {
     prev_queue_len: u8,
     /// Virtual coordinate for use in the layout state.
     next_coord: Cell<u16>,
+    
+    /// Last pressed key, used for detecting word boundaries.
+    last_key: Option<u16>,
+    /// Current word
+    current_word: String,
 }
 
 impl<'a, T> std::fmt::Debug for ChordsV2<'a, T> {
@@ -158,6 +163,8 @@ impl<'a, T> ChordsV2<'a, T> {
             prev_active_layer: u16::MAX,
             prev_queue_len: u8::MAX,
             next_coord: Cell::new(KEY_MAX + 1),
+            last_key: None,
+            current_word: String::new(),
         }
     }
 
@@ -200,9 +207,9 @@ impl<'a, T> ChordsV2<'a, T> {
     /// Update the times in the queue without activating any chords yet.
     /// Returns queued events that are no longer usable in chords.
     pub(crate) fn tick_chv2(&mut self, active_layer: u16) -> SmolQueue {
-        let mut q = SmolQueue::new();
         self.queue.iter_mut().for_each(Queued::tick_qd);
         self.active_chords.iter_mut().for_each(tick_ach);
+        let mut q = SmolQueue::new();
         self.drain_inputs(&mut q, active_layer);
         self.clear_released_chords(&mut q);
         self.ticks_to_ignore_chord = self.ticks_to_ignore_chord.saturating_sub(1);
