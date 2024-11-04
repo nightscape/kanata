@@ -1,9 +1,9 @@
 [package]
-name = "kanata-parser"
+name = "kanata-config"
 version = "0.171.3"
 authors = ["jtroo <j.andreitabs@gmail.com>"]
-description = "A parser for configuration language of kanata, a keyboard remapper."
-keywords = ["kanata", "parser"]
+description = "Configuration library for kanata"
+keywords = ["kanata", "config"]
 homepage = "https://github.com/jtroo/kanata"
 repository = "https://github.com/jtroo/kanata"
 readme = "README.md"
