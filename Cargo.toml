@@ -1,7 +1,7 @@
 [workspace]
 members = [
     "./",
-    "parser",
+    "config",
     "keyberon",
     "example_tcp_client",
     "tcp_protocol",
@@ -54,13 +54,13 @@ simplelog = "0.12.0"
 serde_json = { version = "1", features = ["std"], default-features = false, optional = true }
 time = "0.3.36"
 # kanata-keyberon = "0.171.3"
-# kanata-parser = "0.171.3"
+# kanata-config = "0.171.3"
 # kanata-tcp-protocol = "0.171.3"
 # Uncomment below and comment out above for testing local changes.
 # Otherwise any changes to the local files will not reflect in the compiled
 # binary.
 kanata-keyberon = { path = "keyberon" }
-kanata-parser =   { path = "parser" }
+kanata-config =   { path = "config" }
 kanata-tcp-protocol = { path = "tcp_protocol" }
 
 [target.'cfg(target_os = "macos")'.dependencies]
@@ -121,23 +121,23 @@ regex = { version = "1.10.4", optional = true }
 default = ["tcp_server","win_sendinput_send_scancodes", "zippychord"]
 perf_logging = []
 tcp_server = ["serde_json"]
-win_sendinput_send_scancodes = ["kanata-parser/win_sendinput_send_scancodes"]
-win_llhook_read_scancodes = ["kanata-parser/win_llhook_read_scancodes"]
+win_sendinput_send_scancodes = ["kanata-config/win_sendinput_send_scancodes"]
+win_llhook_read_scancodes = ["kanata-config/win_llhook_read_scancodes"]
 win_manifest = ["embed-resource", "indoc", "regex"]
-cmd = ["kanata-parser/cmd"]
-interception_driver = ["kanata-interception", "kanata-parser/interception_driver"]
+cmd = ["kanata-config/cmd"]
+interception_driver = ["kanata-interception", "kanata-config/interception_driver"]
 simulated_output = ["indoc"]
 simulated_input = ["indoc"]
 passthru_ahk = ["simulated_input","simulated_output"]
 wasm = [ "instant/wasm-bindgen" ]
-gui = ["win_manifest","kanata-parser/gui",
+gui = ["win_manifest","kanata-config/gui",
   "win_sendinput_send_scancodes","win_llhook_read_scancodes",
   "muldiv","strip-ansi-escapes","open",
   "dep:windows-sys",
   "winapi/processthreadsapi",
   "native-windows-gui/tray-notification","native-windows-gui/message-window","native-windows-gui/menu","native-windows-gui/cursor","native-windows-gui/high-dpi","native-windows-gui/embed-resource","native-windows-gui/image-decoder","native-windows-gui/notice","native-windows-gui/animation-timer",
 ]
-zippychord = ["kanata-parser/zippychord"]
+zippychord = ["kanata-config/zippychord"]
 
 [profile.release]
 opt-level = "z"
