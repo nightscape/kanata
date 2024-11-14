@@ -11,7 +11,7 @@ use std::sync::Arc;
 #[cfg(feature = "tcp_server")]
 type HashMap<K, V> = rustc_hash::FxHashMap<K, V>;
 #[cfg(feature = "tcp_server")]
-use kanata_parser::cfg::SimpleSExpr;
+use kanata_config::cfg::SimpleSExpr;
 #[cfg(feature = "tcp_server")]
 use std::io::Write;
 #[cfg(feature = "tcp_server")]
@@ -24,7 +24,7 @@ pub type Connections = Arc<Mutex<HashMap<String, TcpStream>>>;
 pub type Connections = ();
 
 #[cfg(feature = "tcp_server")]
-use kanata_parser::custom_action::FakeKeyAction;
+use kanata_config::custom_action::FakeKeyAction;
 
 #[cfg(feature = "tcp_server")]
 fn to_action(val: FakeKeyActionMessage) -> FakeKeyAction {
@@ -65,7 +65,7 @@ impl TcpServer {
 
     #[cfg(feature = "tcp_server")]
     pub fn start(&mut self, kanata: Arc<Mutex<Kanata>>) {
-        use kanata_parser::cfg::FAKE_KEY_ROW;
+        use kanata_config::cfg::FAKE_KEY_ROW;
 
         use crate::kanata::handle_fakekey_action;
 
@@ -223,7 +223,7 @@ impl TcpServer {
                                             }
                                             }
                                         }
-                                        use kanata_parser::keys::*;
+                                        use kanata_config::keys::*;
                                         wakeup_channel
                                             .send(KeyEvent {
                                                 code: OsCode::KEY_RESERVED,

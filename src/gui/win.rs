@@ -1,7 +1,7 @@
 use crate::Kanata;
 use anyhow::{bail, Result};
 use core::cell::RefCell;
-use kanata_parser::cfg::CfgOptionsGui;
+use kanata_config::cfg::CfgOptionsGui;
 use log::Level::*;
 use std::cell::Cell;
 use winapi::shared::windef::HWND;
@@ -32,7 +32,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 };
 
 use crate::gui::win_nwg_ext::{BitmapEx, MenuEx, MenuItemEx};
-use kanata_parser::cfg;
+use kanata_config::cfg;
 use nwg::{ControlHandle, NativeUi};
 use std::sync::Arc;
 

@@ -93,14 +93,14 @@ pub(super) fn do_sequence_press_logic(
     k: &KeyCode,
     mod_mask: u16,
     kbd_out: &mut KbdOut,
-    sequences: &kanata_parser::trie::Trie<(u8, u16)>,
+    sequences: &kanata_config::trie::Trie<(u8, u16)>,
     sequence_backtrack_modcancel: bool,
     layout: &mut BorrowedKLayout,
 ) -> Result<(), anyhow::Error> {
     state.ticks_until_timeout = state.sequence_timeout;
     let osc = OsCode::from(*k);
     state.raw_oscs.push(osc);
-    use kanata_parser::trie::GetOrDescendentExistsResult::*;
+    use kanata_config::trie::GetOrDescendentExistsResult::*;
     let pushed_into_seq = {
         // Transform to OsCode and convert modifiers other than altgr/ralt
         // (same key different names) to the left version, since that's

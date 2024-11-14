@@ -143,7 +143,7 @@ fn send_key_sendinput(code: u16, is_key_up: bool) {
         }
         #[cfg(not(feature = "win_sendinput_send_scancodes"))]
         {
-            use kanata_parser::keys::*;
+            use kanata_config::keys::*;
             kb_input.wVk = match code {
                 VK_KPENTER_FAKE => VK_RETURN as u16,
                 _ => code,

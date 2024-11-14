@@ -2,9 +2,9 @@
 
 use std::fmt::Write;
 
-use kanata_parser::cfg::parse_mod_prefix;
-use kanata_parser::cfg::sexpr::*;
-use kanata_parser::keys::*;
+use kanata_config::cfg::parse_mod_prefix;
+use kanata_config::cfg::sexpr::*;
+use kanata_config::keys::*;
 
 // local log prefix
 const LP: &str = "cmd-out:";

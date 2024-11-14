@@ -185,7 +185,7 @@ enum Scancode {
 */
 
 use kanata_interception::*;
-use kanata_parser::keys::OsCode;
+use kanata_config::keys::OsCode;
 
 // We need to wrap OsCode to impl TryFrom<..> for it, because it's in external crate.
 pub struct OsCodeWrapper(pub OsCode);

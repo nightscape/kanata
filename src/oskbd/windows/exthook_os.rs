@@ -10,7 +10,7 @@ use winapi::um::winuser::*;
 use crate::oskbd::{KeyEvent, KeyValue};
 use kanata_keyberon::key_code::KeyCode;
 
-use kanata_parser::keys::*;
+use kanata_config::keys::*;
 
 pub const LLHOOK_IDLE_TIME_SECS_CLEAR_INPUTS: u64 = 60;
 

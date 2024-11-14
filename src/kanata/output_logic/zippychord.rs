@@ -1,6 +1,6 @@
 use super::*;
 
-use kanata_parser::subset::GetOrIsSubsetOfKnownKey::*;
+use kanata_config::subset::GetOrIsSubsetOfKnownKey::*;
 
 use std::sync::Arc;
 use std::sync::Mutex;

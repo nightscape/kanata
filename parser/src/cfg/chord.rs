@@ -1,12 +1,13 @@
+use config::cfg::sexpr::{SExpr, Spanned};
+use config::cfg::{ParseError, Result, ParserState, KanataCustom, Action, CustomAction};
+use config::keys::OsCode;
+use config::layers::LayerIndexes;
+
 use itertools::Itertools;
 use kanata_keyberon::chord::{ChordV2, ChordsForKey, ChordsForKeys, ReleaseBehaviour};
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use std::fs;
-
-use crate::{anyhow_expr, bail_expr};
-
-use super::*;
 
 pub(crate) fn parse_defchordv2(
     exprs: &[SExpr],
@@ -69,7 +70,6 @@ pub(crate) fn parse_defchordv2(
     let successful = all_chords.into_iter().filter_map(Result::ok).collect_vec();
     for chord in successful {
         for pkey in chord.participating_keys.iter().copied() {
-            //log::trace!("chord for key:{pkey:?} > {chord:?}");
             chords_container
                 .mapping
                 .entry(pkey)
@@ -101,7 +101,7 @@ fn parse_single_chord(
             "Duplicate participating-keys, key sets may be used only once."
         );
     }
-    let action = parse_action(&chunk[1], s)?;
+    let action = config::cfg::parse_action(&chunk[1], s)?;
     let timeout = parse_timeout(&chunk[2], s)?;
     let release_behaviour = parse_release_behaviour(&chunk[3], s)?;
     let disabled_layers = parse_disabled_layers(&chunk[4], s)?;
@@ -121,7 +121,7 @@ fn parse_participating_keys(keys: &SExpr, s: &ParserState) -> Result<Vec<u16>> {
         .map(|l| {
             l.iter()
                 .try_fold(vec![], |mut keys, key| -> Result<Vec<u16>> {
-                    let k = key.atom(s.vars()).and_then(str_to_oscode).ok_or_else(|| {
+                    let k = key.atom(s.vars()).and_then(config::keys::str_to_oscode).ok_or_else(|| {
                         anyhow_expr!(
                             key,
                             "The first chord item must be a list of keys.\nInvalid key name."
@@ -140,7 +140,7 @@ fn parse_participating_keys(keys: &SExpr, s: &ParserState) -> Result<Vec<u16>> {
 }
 
 fn parse_timeout(chunk: &SExpr, s: &ParserState) -> Result<u16> {
-    let timeout = parse_non_zero_u16(chunk, s, "chord timeout")?;
+    let timeout = config::cfg::parse_non_zero_u16(chunk, s, "chord timeout")?;
     Ok(timeout)
 }
 
@@ -328,7 +328,7 @@ impl<'a> ChordTranslation<'a> {
             self.participant_keys(&chord_def.keys).join(" "),
             self.action(&chord_def.action).join(" ")
         );
-        let mut participant_action = sexpr::parse(&sexpr_string, self.file_name).unwrap()[0]
+        let mut participant_action = config::cfg::sexpr::parse(&sexpr_string, self.file_name).unwrap()[0]
             .t
             .clone();
         participant_action.extend_from_slice(&[

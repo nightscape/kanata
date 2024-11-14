@@ -99,7 +99,7 @@ impl From<KeyValue> for bool {
     }
 }
 
-use kanata_parser::keys::OsCode;
+use kanata_config::keys::OsCode;
 
 #[derive(Clone, Copy)]
 pub struct KeyEvent {

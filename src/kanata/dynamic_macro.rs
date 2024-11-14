@@ -1,8 +1,8 @@
 use std::collections::VecDeque;
 
 use kanata_keyberon::layout::Event;
-use kanata_parser::cfg::ReplayDelayBehaviour;
-use kanata_parser::keys::OsCode;
+use kanata_config::cfg::ReplayDelayBehaviour;
+use kanata_config::keys::OsCode;
 use rustc_hash::FxHashMap as HashMap;
 use rustc_hash::FxHashSet as HashSet;
 

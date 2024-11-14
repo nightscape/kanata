@@ -7,8 +7,8 @@ use kanata_interception::{Interception, KeyState, MouseFlags, MouseState, ScanCo
 use super::OsCodeWrapper;
 use crate::kanata::CalculatedMouseMove;
 use crate::oskbd::KeyValue;
-use kanata_parser::custom_action::*;
-use kanata_parser::keys::*;
+use kanata_config::custom_action::*;
+use kanata_config::keys::*;
 
 /// Key event received by the low level keyboard hook.
 #[derive(Debug, Clone, Copy)]

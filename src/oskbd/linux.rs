@@ -23,10 +23,10 @@ use std::thread;
 
 use super::*;
 use crate::{kanata::CalculatedMouseMove, oskbd::KeyEvent};
-use kanata_parser::cfg::DeviceDetectMode;
-use kanata_parser::cfg::UnicodeTermination;
-use kanata_parser::custom_action::*;
-use kanata_parser::keys::*;
+use kanata_config::cfg::DeviceDetectMode;
+use kanata_config::cfg::UnicodeTermination;
+use kanata_config::custom_action::*;
+use kanata_config::keys::*;
 
 pub struct KbdIn {
     devices: HashMap<Token, (Device, String)>,

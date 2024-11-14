@@ -304,7 +304,7 @@ impl LogFmt {
 use super::*;
 
 use crate::kanata::CalculatedMouseMove;
-use kanata_parser::custom_action::*;
+use kanata_config::custom_action::*;
 
 use std::io;
 

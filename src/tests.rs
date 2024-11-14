@@ -1,3 +1,4 @@
+use kanata_config::cfg::*;
 use kanata_parser::cfg::*;
 use std::sync::Mutex;
 
@@ -143,7 +144,7 @@ fn sizeof_state() {
     assert_eq!(
         std::mem::size_of::<
             kanata_keyberon::layout::State<
-                &'static &'static [&'static kanata_parser::custom_action::CustomAction],
+                &'static &'static [&'static kanata_config::custom_action::CustomAction],
             >,
         >(),
         2 * std::mem::size_of::<usize>()

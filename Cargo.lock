@@ -594,6 +594,7 @@ dependencies = [
  "kanata-config",
  "kanata-interception",
  "kanata-keyberon",
+ "kanata-parser",
  "kanata-tcp-protocol",
  "karabiner-driverkit",
  "log",
@@ -668,6 +669,26 @@ checksum = "73f6f83f03390a5c13bbf68abea76a2b9527e197f5c00026805fd7af62a34752"
 dependencies = [
  "proc-macro2",
  "quote",
+]
+
+[[package]]
+name = "kanata-parser"
+version = "0.171.3"
+dependencies = [
+ "anyhow",
+ "bitflags 2.6.0",
+ "bytemuck",
+ "itertools",
+ "kanata-config",
+ "kanata-keyberon",
+ "log",
+ "miette",
+ "once_cell",
+ "parking_lot",
+ "patricia_tree",
+ "rustc-hash",
+ "simplelog",
+ "thiserror",
 ]
 
 [[package]]

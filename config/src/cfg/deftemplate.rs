@@ -14,12 +14,6 @@
 //!   Instead the code could do recreate the vec only once
 //!   and insert SExprs at the proper places. (perf_2)
 
-use crate::anyhow_expr;
-use crate::anyhow_span;
-use crate::bail_expr;
-use crate::bail_span;
-use crate::err_span;
-
 use super::error::*;
 use super::sexpr::*;
 use super::*;

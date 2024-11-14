@@ -4,7 +4,7 @@ mod main_lib;
 
 use anyhow::{bail, Result};
 use clap::Parser;
-use kanata_parser::cfg;
+use kanata_config::cfg;
 use kanata_state_machine::*;
 use simplelog::{format_description, *};
 use std::path::PathBuf;
@@ -158,7 +158,7 @@ mod cli {
 
         if args.check {
             log::info!("validating config only and exiting");
-            let status = match cfg::new_from_file(&cfg_paths[0]) {
+            let status = match kanata_parser::cfg::new_from_file(&cfg_paths[0]) {
                 Ok(_) => 0,
                 Err(e) => {
                     log::error!("{e:?}");

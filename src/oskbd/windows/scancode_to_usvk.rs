@@ -1,4 +1,4 @@
-use kanata_parser::keys::OsCode;
+use kanata_config::keys::OsCode;
 
 #[rustfmt::skip]
 #[allow(unused)]

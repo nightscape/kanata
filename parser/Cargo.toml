@@ -1,0 +1,43 @@
+[package]
+name = "kanata-parser"
+version = "0.171.3"
+authors = ["jtroo <j.andreitabs@gmail.com>"]
+description = "Configuration library for kanata"
+keywords = ["kanata", "parser"]
+homepage = "https://github.com/jtroo/kanata"
+repository = "https://github.com/jtroo/kanata"
+readme = "README.md"
+license = "LGPL-3.0-only"
+edition = "2021"
+
+[dependencies]
+itertools = "0.12"
+log = { version = "0.4.8", default-features = false }
+anyhow = "1"
+parking_lot = "0.12"
+once_cell = "1"
+patricia_tree = "0.8"
+rustc-hash = "1.1.0"
+miette = { version = "5.7.0", features = ["fancy"] }
+thiserror = "1.0.38"
+
+# kanata-keyberon = "0.171.3"
+# Uncomment below and comment out above for testing local changes.
+# Otherwise any changes to the local files will not reflect in the compiled
+# binary.
+kanata-keyberon = { path = "../keyberon" }
+kanata-config = { path = "../config" }
+bytemuck = "1.15.0"
+bitflags = "2.5.0"
+
+[dev-dependencies]
+simplelog = "0.12.0"
+
+[features]
+cmd = []
+interception_driver = []
+gui = []
+lsp = []
+win_llhook_read_scancodes = []
+win_sendinput_send_scancodes = []
+zippychord = []

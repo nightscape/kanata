@@ -3,7 +3,7 @@
 #[cfg(all(target_os = "windows", feature = "gui"))]
 use crate::gui::win::*;
 use anyhow::{bail, Result};
-use kanata_parser::sequences::*;
+use kanata_config::sequences::*;
 use log::{error, info};
 use parking_lot::Mutex;
 use std::sync::mpsc::{Receiver, SyncSender as Sender, TryRecvError};
@@ -25,11 +25,11 @@ use crate::tcp_server::simple_sexpr_to_json_array;
 #[cfg(feature = "tcp_server")]
 use crate::SocketAddrWrapper;
 use crate::ValidatedArgs;
-use kanata_parser::cfg;
-use kanata_parser::cfg::list_actions::*;
-use kanata_parser::cfg::*;
-use kanata_parser::custom_action::*;
-pub use kanata_parser::keys::*;
+use kanata_config::cfg;
+use kanata_config::cfg::list_actions::*;
+use kanata_config::cfg::*;
+use kanata_config::custom_action::*;
+pub use kanata_config::keys::*;
 use kanata_tcp_protocol::ServerMessage;
 
 mod dynamic_macro;
@@ -282,7 +282,7 @@ static MAPPED_KEYS: Lazy<Mutex<cfg::MappedKeys>> =
 
 impl Kanata {
     pub fn new(args: &ValidatedArgs) -> Result<Self> {
-        let cfg = match cfg::new_from_file(&args.paths[0]) {
+        let cfg = match kanata_parser::cfg::new_from_file(&args.paths[0]) {
             Ok(c) => c,
             Err(e) => {
                 log::error!("{e:?}");
@@ -1108,7 +1108,7 @@ impl Kanata {
 
         if cur_keys.is_empty() && !self.prev_keys.is_empty() {
             if let Some(state) = self.sequence_state.get_active() {
-                use kanata_parser::trie::GetOrDescendentExistsResult::*;
+                use kanata_config::trie::GetOrDescendentExistsResult::*;
                 state.overlapped_sequence.push(KEY_OVERLAP_MARKER);
                 match self
                     .sequences

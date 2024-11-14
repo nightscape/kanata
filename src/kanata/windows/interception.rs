@@ -7,7 +7,7 @@ use std::sync::Arc;
 use super::PRESSED_KEYS;
 use crate::kanata::*;
 use crate::oskbd::KeyValue;
-use kanata_parser::keys::OsCode;
+use kanata_config::keys::OsCode;
 
 impl Kanata {
     pub fn event_loop_inner(kanata: Arc<Mutex<Self>>, tx: Sender<KeyEvent>) -> Result<()> {
