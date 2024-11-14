@@ -1,6 +1,14 @@
-use super::sexpr::SExpr;
+use kanata_config::cfg::{
+    defcfg::{
+        CfgLinuxOptions, CfgOptions, CfgOptionsGui, CfgWinterceptOptions,
+        DeviceDetectMode, KeyRepeatSettings, LinuxCfgOutputBusType,
+        UnicodeTermination,
+    },
+    error::*,
+    sexpr::*,
+};
 use super::HashSet;
-use super::{error::*, TrimAtomQuotes};
+use super::TrimAtomQuotes;
 use crate::cfg::check_first_expr;
 use crate::custom_action::*;
 #[allow(unused)]

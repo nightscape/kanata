@@ -1,0 +1,22 @@
+[package]
+name = "kanata-config"
+version = "0.1.0"
+authors = ["jtroo <j.andreitabs@gmail.com>"]
+description = "Configuration types and structures for kanata, a keyboard remapper."
+keywords = ["kanata", "config"]
+homepage = "https://github.com/jtroo/kanata"
+repository = "https://github.com/jtroo/kanata"
+license = "LGPL-3.0-only"
+edition = "2021"
+
+[dependencies]
+itertools = "0.12"
+log = { version = "0.4.8", default-features = false }
+anyhow = "1"
+parking_lot = "0.12"
+once_cell = "1"
+patricia_tree = "0.8"
+rustc-hash = "1.1.0"
+miette = { version = "5.7.0", features = ["fancy"] }
+kanata-keyberon = { path = "../keyberon" }
+thiserror = "1.0"
