@@ -1,6 +1,7 @@
 use itertools::Itertools;
 use kanata_keyberon::chord::{ChordV2, ChordsForKey, ChordsForKeys, ReleaseBehaviour};
 use rustc_hash::{FxHashMap, FxHashSet};
+use anyhow::Result;
 
 use std::fs;
 

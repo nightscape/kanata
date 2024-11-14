@@ -40,9 +40,6 @@
 
 pub mod sexpr;
 
-pub(crate) mod alloc;
-use alloc::*;
-
 use crate::sequences::*;
 use kanata_keyberon::chord::ChordsV2;
 

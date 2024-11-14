@@ -620,6 +620,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "kanata-config"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "itertools",
+ "kanata-keyberon",
+ "log",
+ "miette",
+ "once_cell",
+ "parking_lot",
+ "patricia_tree",
+ "rustc-hash",
+ "thiserror",
+]
+
+[[package]]
 name = "kanata-interception"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -659,6 +675,7 @@ dependencies = [
  "bitflags 2.6.0",
  "bytemuck",
  "itertools",
+ "kanata-config",
  "kanata-keyberon",
  "log",
  "miette",

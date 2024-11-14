@@ -1,39 +1,15 @@
 use miette::{Diagnostic, NamedSource, SourceSpan};
 use thiserror::Error;
+use kanata_config::cfg::{
+    error::{CfgError, MResult, ParseError, Result},
+    sexpr::{Span, Spanned},
+};
 
-use super::{sexpr::Span, *};
+pub use kanata_config::cfg::error::{CfgError, MResult, ParseError, Result};
 
-pub type MResult<T> = miette::Result<T>;
-pub type Result<T> = std::result::Result<T, ParseError>;
-
-#[derive(Debug, Clone)]
-pub struct ParseError {
-    pub msg: String,
-    pub span: Option<Span>,
-}
-
-impl ParseError {
-    pub fn new(span: Span, err_msg: impl AsRef<str>) -> Self {
-        Self {
-            msg: err_msg.as_ref().to_string(),
-            span: Some(span),
-        }
-    }
-
-    pub fn new_without_span(err_msg: impl AsRef<str>) -> Self {
-        Self {
-            msg: err_msg.as_ref().to_string(),
-            span: None,
-        }
-    }
-
-    pub fn from_expr(expr: &sexpr::SExpr, err_msg: impl AsRef<str>) -> Self {
-        Self::new(expr.span(), err_msg)
-    }
-
-    pub fn from_spanned<T>(spanned: &Spanned<T>, err_msg: impl AsRef<str>) -> Self {
-        Self::new(spanned.span.clone(), err_msg)
-    }
+// Re-export the helper function
+pub fn help(err_msg: impl AsRef<str>) -> String {
+    format!("help: {}", err_msg.as_ref())
 }
 
 impl From<anyhow::Error> for ParseError {
@@ -75,14 +51,4 @@ struct CfgError {
     help_msg: String,
     file_name: Option<String>,
     file_content: Option<String>,
-}
-
-pub(super) fn help(err_msg: impl AsRef<str>) -> String {
-    format!(
-        r"{}
-
-For more info, see the configuration guide:
-https://github.com/jtroo/kanata/blob/main/docs/config.adoc",
-        err_msg.as_ref(),
-    )
 }

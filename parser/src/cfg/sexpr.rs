@@ -5,7 +5,12 @@ use std::{fmt::Debug, iter};
 
 type HashMap<K, V> = rustc_hash::FxHashMap<K, V>;
 
-use super::{ParseError, Result};
+use kanata_config::cfg::{
+    error::{ParseError, Result},
+    sexpr::{Position, SExpr, SExprMetaData, Span, Spanned, TopLevel},
+};
+
+pub use kanata_config::cfg::sexpr::{Position, SExpr, SExprMetaData, Span, Spanned, TopLevel};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct Position {
