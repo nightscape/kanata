@@ -1708,6 +1708,9 @@ fn parse_action_atom(ac_span: &Spanned<String>, s: &ParserState) -> Result<&'sta
             ),
             _ => return custom(CustomAction::ReverseReleaseOrder, &s.a),
         },
+        "display-overlay" => {
+            return custom(CustomAction::DisplayOverlay { svg_string: ac.to_string() }, &s.a)
+        }
         "use-defsrc" => {
             return Ok(s.a.sref(Action::Src));
         }
@@ -1891,6 +1894,7 @@ fn parse_action_list(ac: &[SExpr], s: &ParserState) -> Result<&'static KanataAct
         DYNAMIC_MACRO_RECORD => parse_dynamic_macro_record(&ac[1..], s),
         DYNAMIC_MACRO_PLAY => parse_dynamic_macro_play(&ac[1..], s),
         ARBITRARY_CODE => parse_arbitrary_code(&ac[1..], s),
+        DISPLAY_OVERLAY => parse_display_overlay(&ac[1..], s),
         CMD => parse_cmd(&ac[1..], s, CmdType::Standard),
         CMD_OUTPUT_KEYS => parse_cmd(&ac[1..], s, CmdType::OutputKeys),
         CMD_LOG => parse_cmd_log(&ac[1..], s),
@@ -3885,6 +3889,17 @@ fn parse_arbitrary_code(ac_params: &[SExpr], s: &ParserState) -> Result<&'static
     Ok(s.a.sref(Action::Custom(
         s.a.sref(s.a.sref_slice(CustomAction::SendArbitraryCode(code))),
     )))
+}
+
+fn parse_display_overlay(exprs: &[SExpr], s: &ParserState) -> Result<&'static KanataAction> {
+    const ERR_MSG: &str =
+        "display-overlay expects one parameter: <svg string>";
+    if exprs.len() != 1 {
+        bail!("{ERR_MSG}\nfound {} items", exprs.len());
+    }
+    let svg_string = exprs[0].to_string();
+    log::info!("Parsed display-overlay with SVG string: {}", svg_string);
+    Ok(s.a.sref(Action::Custom(s.a.sref(s.a.sref_slice(CustomAction::DisplayOverlay { svg_string })))))
 }
 
 fn parse_overrides(exprs: &[SExpr], s: &ParserState) -> Result<Overrides> {

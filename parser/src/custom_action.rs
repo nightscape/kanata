@@ -97,6 +97,9 @@ pub enum CustomAction {
     ClipboardSaveSet(u16, String),
     ClipboardSaveCmdSet(u16, Vec<String>),
     ClipboardSaveSwap(u16, u16),
+    DisplayOverlay {
+        svg_string: String,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

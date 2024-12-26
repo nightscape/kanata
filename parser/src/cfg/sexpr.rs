@@ -236,6 +236,25 @@ impl std::fmt::Debug for SExpr {
     }
 }
 
+impl std::fmt::Display for SExpr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SExpr::Atom(a) => write!(f, "{}", &a.t),
+            SExpr::List(l) => {
+                write!(f, "(")?;
+                for i in 0..l.t.len() - 1 {
+                    write!(f, "{} ", &l.t[i])?;
+                }
+                if let Some(last) = &l.t.last() {
+                    write!(f, "{last}")?;
+                }
+                write!(f, ")")?;
+                Ok(())
+            }
+        }
+    }
+}
+
 #[derive(Clone, PartialEq, Eq, Debug)]
 /// Complementary to SExpr metadata items.
 pub enum SExprMetaData {

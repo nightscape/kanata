@@ -35,6 +35,11 @@ use kanata_tcp_protocol::ServerMessage;
 mod clipboard;
 use clipboard::*;
 
+#[cfg(feature = "overlay")]
+mod overlay;
+#[cfg(feature = "overlay")]
+use overlay::*;
+
 mod dynamic_macro;
 use dynamic_macro::*;
 
@@ -256,6 +261,8 @@ pub struct Kanata {
     /// When > 0, it means macros should be cancelled on the next press.
     /// Upon cancelling this should be set to 0.
     pub macro_on_press_cancel_duration: u32,
+    #[cfg(feature = "overlay")]
+    pub overlay_state: Arc<Mutex<OverlayState>>,
     /// Stores user's saved clipboard contents.
     pub saved_clipboard_content: SavedClipboardData,
     // if set, key taps of this code are sent whenever mouse movement events are passed through
@@ -483,6 +490,8 @@ impl Kanata {
             gui_opts: cfg.options.gui_opts,
             allow_hardware_repeat: cfg.options.allow_hardware_repeat,
             macro_on_press_cancel_duration: 0,
+            #[cfg(feature = "overlay")]
+            overlay_state: Arc::new(Mutex::new(OverlayState::default())),
             saved_clipboard_content: Default::default(),
             #[cfg(any(
                 all(target_os = "windows", feature = "interception_driver"),
@@ -495,8 +504,29 @@ impl Kanata {
 
     /// Create a new configuration from a file, wrapped in an Arc<Mutex<_>>
     pub fn new_arc(args: &ValidatedArgs) -> Result<Arc<Mutex<Self>>> {
-        Ok(Arc::new(Mutex::new(Self::new(args)?)))
+        let kanata = Arc::new(Mutex::new(Self::new(args)?));
+
+        #[cfg(all(feature = "overlay", not(target_os = "macos")))]
+        {
+            let overlay_state = Arc::clone(&kanata.lock().overlay_state);
+            // Start overlay in a background thread
+            std::thread::spawn(move || {
+                overlay::start_overlay(overlay_state);
+            });
+        }
+        #[cfg(all(feature = "overlay", target_os = "macos"))]
+        {
+            let overlay_state = Arc::clone(&kanata.lock().overlay_state);
+            // In your main application initialization
+            let overlay_sender = initialize_overlay();
+
+            // Later, when you want to update the overlay
+            overlay_sender.send(OverlayMessage::UpdateSvg(new_svg_string)).unwrap();
+        }
+
+        Ok(kanata)
     }
+
 
     pub fn new_from_str(cfg: &str, file_content: HashMap<String, String>) -> Result<Self> {
         let cfg = match cfg::new_from_str(cfg, file_content) {
@@ -629,6 +659,8 @@ impl Kanata {
             gui_opts: cfg.options.gui_opts,
             allow_hardware_repeat: cfg.options.allow_hardware_repeat,
             macro_on_press_cancel_duration: 0,
+            #[cfg(feature = "overlay")]
+            overlay_state: Arc::new(Mutex::new(OverlayState::default())),
             saved_clipboard_content: Default::default(),
             #[cfg(any(
                 all(target_os = "windows", feature = "interception_driver"),
@@ -1489,6 +1521,16 @@ impl Kanata {
                                 "movemousespeed modifiers: {:?}",
                                 self.move_mouse_speed_modifiers
                             );
+                        }
+                        CustomAction::DisplayOverlay { .. } => {
+                            log::debug!("DisplayOverlay");
+                            #[cfg(feature = "overlay")]
+                            {
+                                log::debug!("DisplayOverlay now");
+                                overlay::start_overlay(self.overlay_state.clone());
+                                let mut state = self.overlay_state.lock();
+                                state.svg_string = Some(svg_string.clone());
+                            }
                         }
                         CustomAction::Cmd(_cmd) => {
                             #[cfg(feature = "cmd")]

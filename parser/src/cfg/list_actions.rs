@@ -94,6 +94,7 @@ pub const SETMOUSE_A: &str = "set🖱";
 pub const DYNAMIC_MACRO_RECORD: &str = "dynamic-macro-record";
 pub const DYNAMIC_MACRO_PLAY: &str = "dynamic-macro-play";
 pub const ARBITRARY_CODE: &str = "arbitrary-code";
+pub const DISPLAY_OVERLAY: &str = "display-overlay";
 pub const CMD: &str = "cmd";
 pub const CMD_LOG: &str = "cmd-log";
 pub const PUSH_MESSAGE: &str = "push-msg";
@@ -218,6 +219,7 @@ pub fn is_list_action(ac: &str) -> bool {
         DYNAMIC_MACRO_RECORD,
         DYNAMIC_MACRO_PLAY,
         ARBITRARY_CODE,
+        DISPLAY_OVERLAY,
         CMD,
         CMD_OUTPUT_KEYS,
         CMD_LOG,

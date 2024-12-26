@@ -1,0 +1,55 @@
+;; Mouse-focused configuration for Kanata
+(defcfg
+  ;; Enable mouse button processing
+  process-unmapped-keys yes
+)
+
+(defsrc
+  ;; Define source keys that will be remapped to mouse actions
+  grv  1    2    3    4    5    6    7    8    9    0    -    =    bspc
+  tab  q    w    e    r    t    y    u    i    o    p    [    ]    \
+  caps a    s    d    f    g    h    j    k    l    ;    '    ret
+  lsft z    x    c    v    b    n    m    ,    .    /    rsft
+  lctl lmet lalt           spc            ralt rmet rctl
+)
+
+(defalias
+  ;; Mouse wheel actions
+  mwu (mwheel-up 50 120)       ;; Scroll up
+  mwd (mwheel-down 50 120)     ;; Scroll down
+  mwl (mwheel-left 50 120)     ;; Scroll left
+  mwr (mwheel-right 50 120)    ;; Scroll right
+
+  ;; Mouse movement actions
+  ms↑ (movemouse-up 1 1)       ;; Move mouse up
+  ms← (movemouse-left 1 1)     ;; Move mouse left
+  ms↓ (movemouse-down 1 1)     ;; Move mouse down
+  ms→ (movemouse-right 1 1)    ;; Move mouse right
+
+  ;; Accelerated mouse movement
+  ma↑ (movemouse-accel-up 1 1000 1 5)       ;; Accelerated up
+  ma← (movemouse-accel-left 1 1000 1 5)     ;; Accelerated left
+  ma↓ (movemouse-accel-down 1 1000 1 5)     ;; Accelerated down
+  ma→ (movemouse-accel-right 1 1000 1 5)    ;; Accelerated right
+
+  ;; Mouse buttons
+  mlft (mouse-button left)     ;; Left click
+  mrgt (mouse-button right)    ;; Right click
+  mmid (mouse-button middle)   ;; Middle click
+  mfwd (mouse-button forward)  ;; Forward button
+  mbck (mouse-button back)     ;; Back button
+
+  ;; Mouse speed control
+  mspd (movemouse-speed 200)   ;; Control mouse speed
+
+  ;; Set mouse position
+  sm (setmouse 32228 32228)    ;; Set mouse to center of screen
+)
+
+(deflayer mouse
+  @mwu @mwd @mwl @mwr _    _    _    _    _    @ma↑ _    _    _
+  _    _    _    _    _    _    _    _    @ma← @ma↓ @ma→ _    _
+  _    @mlft _    @mrgt @mmid _    @mbck @mfwd _    @ms↑ _    _
+  @mspd _    _    _    _    _    _    _    @ms← @ms↓ @ms→ _
+  _    _    _              _              _    _    _
+)

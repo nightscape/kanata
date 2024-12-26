@@ -1,0 +1,27 @@
+(defcfg
+  process-unmapped-keys yes
+)
+
+(defsrc
+  caps grv         i
+              j    k    l
+  lsft rsft
+)
+
+(deflayer default
+  @cap @grv        @ovl
+              _    _    _
+  _    _
+)
+
+(deflayer arrows
+  _    _           up
+              left down rght
+  _    _
+)
+
+(defalias
+  cap (tap-hold-press 200 200 caps lctl)
+  grv (tap-hold-press 200 200 grv (layer-toggle arrows))
+  ovl (display-overlay "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='40' fill='red'/></svg>")
+)

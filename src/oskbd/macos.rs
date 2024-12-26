@@ -402,6 +402,41 @@ impl KbdOut {
         Ok(())
     }
 
+    // Alternative version that returns combined bounds
+    pub fn get_display_bounds() -> CGRect {
+        let zero_bounds = CGRect::new(&CGPoint::new(0.0, 0.0), &CGSize::new(0.0, 0.0));
+        if let Ok(displays) = CGDisplay::active_displays() {
+            // Union all display bounds
+            displays.iter()
+                .filter_map(|display_id| {
+                    let display = CGDisplay::new(*display_id);
+                    Some(display.bounds())
+                })
+                .fold(zero_bounds, |acc, bounds| {
+                    let mut acc = acc;
+                    // Find the leftmost and topmost points
+                    let min_x = acc.origin.x.min(bounds.origin.x);
+                    let min_y = acc.origin.y.min(bounds.origin.y);
+
+                    // Find the rightmost and bottommost points
+                    let max_x = (acc.origin.x + acc.size.width).max(bounds.origin.x + bounds.size.width);
+                    let max_y = (acc.origin.y + acc.size.height).max(bounds.origin.y + bounds.size.height);
+
+                    // Set new origin to minimum points
+                    acc.origin.x = min_x;
+                    acc.origin.y = min_y;
+
+                    // Set new size based on the difference between max and min
+                    acc.size.width = max_x - min_x;
+                    acc.size.height = max_y - min_y;
+
+                    acc
+                })
+        } else {
+            zero_bounds
+        }
+    }
+
     pub fn set_mouse(&mut self, _x: u16, _y: u16) -> Result<(), io::Error> {
         let display = CGDisplay::main();
         let point = CGPoint::new(_x as CGFloat, _y as CGFloat);
@@ -409,6 +444,55 @@ impl KbdOut {
             .move_cursor_to_point(point)
             .map_err(|_| io::Error::other("failed to move cursor to point"))?;
         Ok(())
+        let bounds = Self::get_display_bounds();
+
+        // Get current mouse position
+        let event = Self::make_event()?;
+        let current_pos = event.location();
+
+        // Convert from 0-65535 range to normalized 0.0-1.0 coordinates
+        // Use current position if input is 0
+        let normalized_x = if _x > 0 { _x as CGFloat / 65535.0 } else { current_pos.x / bounds.size.width };
+        let normalized_y = if _y > 0 { _y as CGFloat / 65535.0 } else { current_pos.y / bounds.size.height };
+
+        // Get all displays and their bounds
+        if let Ok(displays) = CGDisplay::active_displays() {
+            for display_id in displays.iter() {
+                let display = CGDisplay::new(*display_id);
+                let display_bounds = display.bounds();
+
+                // Calculate the relative position within the total bounds
+                let rel_x = normalized_x * bounds.size.width;
+                let rel_y = normalized_y * bounds.size.height;
+
+                // Check if the point falls within this display
+                if rel_x >= display_bounds.origin.x
+                   && rel_x < display_bounds.origin.x + display_bounds.size.width
+                   && rel_y >= display_bounds.origin.y
+                   && rel_y < display_bounds.origin.y + display_bounds.size.height {
+
+                    // Convert to display-local coordinates
+                    let mouse_position = CGPoint {
+                        x: rel_x,
+                        y: rel_y,
+                    };
+
+                    log::warn!("Setting mouse to {:?}", mouse_position);
+                    return display.move_cursor_to_point(mouse_position)
+                        .map_err(|_| io::Error::new(ErrorKind::Other, "failed to move cursor to point"));
+                }
+            }
+        }
+
+        // If no display was found (shouldn't happen), use main display
+        let mouse_position = CGPoint {
+            x: normalized_x * bounds.size.width,
+            y: normalized_y * bounds.size.height,
+        };
+
+        log::warn!("Setting mouse to {:?}", mouse_position);
+        display.move_cursor_to_point(mouse_position)
+            .map_err(|_| io::Error::new(ErrorKind::Other, "failed to move cursor to point"))
     }
 
     fn make_event_source() -> Result<CGEventSource, Error> {

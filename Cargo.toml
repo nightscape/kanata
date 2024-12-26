@@ -61,9 +61,16 @@ kanata-tcp-protocol = { path = "tcp_protocol", version = "0.1100.0" }
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 arboard = "3.4"
 
+# Added Dependencies for Overlay Feature
+winit = { version = "0.30.7", optional = true }
+egui = { version = "0.30", optional = true }
+egui-winit = { version = "0.30", optional = true }
+eframe = { version = "0.30", optional = true }
+egui_extras = { version = "0.30", optional = true, features = ["svg"] }
+
 [target.'cfg(target_os = "macos")'.dependencies]
 karabiner-driverkit = "0.2.0"
-objc = "0.2.7"
+objc = { version = "0.2.7", optional = true }
 core-graphics = "0.24.0"
 open = { version = "5", optional = true }
 libc = "0.2"
@@ -139,6 +146,8 @@ gui = ["win_manifest","kanata-parser/gui",
   "native-windows-gui/tray-notification","native-windows-gui/message-window","native-windows-gui/menu","native-windows-gui/cursor","native-windows-gui/high-dpi","native-windows-gui/embed-resource","native-windows-gui/image-decoder","native-windows-gui/notice","native-windows-gui/animation-timer",
 ]
 zippychord = ["kanata-parser/zippychord"]
+
+overlay = ["winit", "egui", "eframe", "egui_extras", "objc"]
 
 [profile.release]
 opt-level = "z"
