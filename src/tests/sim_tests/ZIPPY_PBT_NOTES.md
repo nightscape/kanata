@@ -27,6 +27,10 @@ Philosophy: generate as broadly as possible; narrow only for invalid input
   the oracle's placement logic against hand-computed expectations.
 - `zippychord_sim_tests::repro_overlap_underdelete` — minimal deterministic
   reproduction of the (now-fixed) under-count bug (**GREEN**).
+- `interaction_taphold_zippy_order_independent` and
+  `zippychord_sim_tests::sim_zippy_taphold_chord_press_order_dependent` —
+  **GREEN**: the chord×tap-hold press-order bug, asserted as the intended
+  order-independence invariant and now fixed (see the fixed-bug section below).
 
 ## Framework generalisation (prototype)
 
@@ -74,10 +78,19 @@ Members so far:
 - `interaction_taphold_zippy_order_independent` — the chord×tap-hold *overlap* (a
   key that is BOTH a tap-hold action AND a chord participant); the construction
   oracles can't predict the combined output, so a tier-2 *determinism* oracle
-  judges it (a chord is a set ⇒ press order must not change the text). `#[ignore]`d
-  because it is RED against current behaviour: it auto-shrinks to
-  `deadline=10, hold_gap=10` and reproduces the documented press-order bug
-  (space-first `no ` vs n-first `n `). Un-ignore once fixed.
+  judges it (a chord is a set ⇒ press order must not change the text). **GREEN**:
+  it was RED (reproducing space-first `no ` vs n-first `n `, auto-shrinking to
+  `deadline=10, hold_gap=10`) until the press-order bug was fixed — see the
+  fixed-bug section below. Its deterministic sibling is
+  `zippychord_sim_tests::sim_zippy_taphold_chord_press_order_dependent` (asserts
+  the same invariant on a fixed config).
+
+## Testing policy: a real bug is a RED test, never `#[ignore]`d
+A known, unfixed bug MUST surface as a failing test. Do not hide it behind
+`#[ignore]`, and do not write a "characterization" test that pins the *buggy*
+output as if it were correct (that is a green test guarding a bug — the same false
+comfort). Assert the *intended* behaviour and let it fail. The suite is therefore
+RED whenever an open bug is in scope; that is the signal working as designed.
 
 ### Capability-selected invariant catalog (the shared spine)
 
@@ -87,6 +100,21 @@ cap per feature, never a cap named after a property. Each tier-2 invariant is
 authored once in a single `INVARIANTS` catalog with a need-set; a slice declares
 which components its keymap exercises, and `run_invariants` runs exactly the
 selected subset over each tick's event stream.
+
+Invariants run with an `InvCtx` (the raw event stream + a `quiescent` flag = all
+physical keys released at end of step), so an invariant can hold only at rest.
+Current catalog (all need `OutputKeyState`):
+- `no_double_press` — a key pressed twice with no release between (OS coalesces →
+  the second press is lost). Always.
+- `clean_release` — at rest, no output key left held (every `↓` has a `↑`);
+  catches dangling held keys and subsumes modifier-balance-at-rest. Quiescent-only.
+
+Rejected (kept as a lesson): `no_release_without_press` was added and immediately
+caught zippychord's **capitalize idiom** — `↑X ↓X` to re-assert a key under shift,
+which emits a *phantom* `↑X` when the eager `↓X` was never sent (harmless on a real
+OS). That is intended behaviour, so the invariant is unsound as stated and was
+dropped rather than weakened to model the idiom. The catalog process rejecting an
+unsound invariant *is* the mechanism working.
 
 - Selection rule: `runs ⟺ needs_pos ⊆ present ∧ needs_neg ∩ present = ∅`. The
   negative half is reserved for degraded-mode twins (smart-space full vs none).
@@ -109,9 +137,10 @@ union). Remaining:
 
 1. **Lift the chord×tap-hold overlap into the coupled model.** Today chord keys
    and tap-hold inputs are disjoint alphabets, so the deadline-race overlap is
-   only exercised by the ignored `interaction_*` determinism test. To bring it
-   into the coupled model the reference must predict (or metamorphically judge)
-   that overlap — and it is RED until the press-order bug is fixed.
+   only exercised by the `interaction_*` determinism test. To bring it into the
+   coupled model the reference must predict (or metamorphically judge) that
+   overlap. The press-order bug it would have hit is now fixed (deadline freeze),
+   so this is a pure coverage lift rather than a blocked-on-bug one.
 2. **Lift the deferred tap-hold narrowings** (see the list below): tap output is
    currently always = the input key, and `FreeType`/`Literal` exclude tap-hold
    input keys (a tap-hold delays its output, reordering it past a plain key in the
@@ -166,9 +195,10 @@ union). Remaining:
    tap half-resolved. The single-key `TapHoldTap`/`TapHoldHold` transitions cover
    tap-hold output; multi-key free typing over tap-hold keys is deferred.
 10. The chord×tap-hold *overlap* (a key that is both a chord participant and a
-    tap-hold action) — the deadline race. Generated only by the ignored
-    `interaction_taphold_zippy_order_independent` test, not the coupled model;
-    RED until the press-order bug is fixed.
+    tap-hold action) — the deadline race. Generated only by the
+    `interaction_taphold_zippy_order_independent` test, not the coupled model. The
+    press-order bug here is now fixed (deadline freeze); lifting it into the
+    coupled model remains a coverage TODO (#1 above).
 
 ## Triage workflow
 On a `kanata_proptest::zippychord_state_machine` failure:
@@ -191,15 +221,41 @@ common-prefix logic it leaked across tests (flaky `sim_zippychord_smartspace_ove
 Fixed in `zippychord.rs` `zchd_reset` by zeroing it. (`simulate_with_file_content`
 also now clears the global `PRESSED_KEYS` defensively.)
 
-## Confirmed bug: backspace under-count (RED, not yet fixed)
+## Bug surfaced & FIXED: backspace under-count (common-prefix optimization)
 When an activation reuses characters from a prior eager activation via the
 common-prefix optimization (`zippychord.rs` ~lines 344/394), those reused chars
-are not counted toward deletion, so a following overlapping/followup activation
-backspaces too few characters and leaves stray text.
-- Minimal deterministic repro (`repro_overlap_underdelete`): dict `b`→"c",
-  ` b`→"cfbcc", ` bd`→"fee "; pressing b,SPACE,d yields "cfee " instead of "fee ".
-- The state machine independently shrinks to e.g. roots `d`→"bBA", ` d`→"ba",
-  ` cd`→" AA "; pressing d,SPACE,c yields "b AA " instead of " AA ".
-A one-line fix (seed the delete counter with the common-prefix length) fixes the
-minimal case but NOT all manifestations — the accounting needs a broader rework.
-Fix deliberately deferred until the regression base is solid (this is it).
+were not counted toward deletion, so a following overlapping/followup activation
+backspaced too few characters and left stray text.
+- Minimal deterministic repro (`zippychord_sim_tests::repro_overlap_underdelete`,
+  **GREEN**): dict `b`→"c", ` b`→"cfbcc", ` bd`→"fee "; pressing b,SPACE,d once
+  yielded "cfee " instead of "fee ".
+- The state machine independently shrank to e.g. roots `d`→"bBA", ` d`→"ba",
+  ` cd`→" AA "; pressing d,SPACE,c once yielded "b AA " instead of " AA ".
+FIXED in `zippychord.rs` (the delete accounting now includes the common-prefix
+length); both shrunk cases are pinned as regressions and `zippychord_state_machine`
+is GREEN. The first attempt (seed the delete counter with the common-prefix length
+only) fixed the minimal case but not all manifestations, so the accounting was
+reworked more broadly.
+
+## Bug surfaced & FIXED: chord×tap-hold press-order (deadline race)
+When a chord participant is also a `tap-hold` (or layer) key, the layout *delays*
+that key's output until the tap-hold resolves. The `on-first-press-chord-deadline`
+counts from the first chord key reaching zippychord, so the outcome was
+press-order dependent: pressing the tap-hold key first queues the other key (both
+arrive together → chord fires), but pressing the plain key first lets it race
+ahead and start the deadline, which then expires before the delayed key arrives
+(chord lost). For ` n`→`no` with space as a 200ms tap-hold: space-first `no `,
+n-first `n `.
+- Reproductions (**GREEN** since the fix):
+  `interaction_taphold_zippy_order_independent` (PBT over deadline/hold-gap) and
+  `zippychord_sim_tests::sim_zippy_taphold_chord_press_order_dependent`
+  (deterministic), both asserting press-order independence (`no ` either way).
+FIXED by **freezing the chord deadline while the layout is still deferring
+output** — `zchd_tick` only counts the deadline down when `layout_pending` is
+false, where `layout_pending = layout.waiting.is_some() || !layout.queue.is_empty()`
+is read in `Kanata::tick_states` and threaded through `zippy_tick`/`zch_tick`. The
+deadline thus measures how fast the *user* pressed the chord keys, not how long the
+*layout* deferred a key's output. Plain-key gestures (no `waiting`) are unaffected,
+so the deadline still disables zippy for deliberately-held-then-extended typing.
+This is the cross-layer signal the rx-brief / [[zippy-pbt-layout-blindspot]] noted
+zippychord lacks when it sees only the post-layout output stream.

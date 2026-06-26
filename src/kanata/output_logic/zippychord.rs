@@ -111,7 +111,7 @@ struct ZchDynamicState {
 }
 
 impl ZchDynamicState {
-    fn zchd_tick(&mut self, is_caps_word_active: bool) {
+    fn zchd_tick(&mut self, is_caps_word_active: bool, layout_pending: bool) {
         const TICKS_UNTIL_FORCE_STATE_RESET: u16 = 10000;
         self.zchd_ticks_since_state_change += 1;
         self.zchd_is_caps_word_active = is_caps_word_active;
@@ -127,7 +127,17 @@ impl ZchDynamicState {
             ZchEnabledState::Enabled => {
                 // Only run disable-check logic if ticks is already greater than zero, because zero
                 // means deadline has never been triggered by any press.
-                if self.zchd_ticks_until_disable > 0 {
+                //
+                // Freeze the deadline while the layout is still deferring output (a
+                // tap-hold / chord decision is pending or events are queued behind
+                // one). The deadline measures how fast the *user* pressed the chord
+                // keys; a participating key routed through a tap-hold has its output
+                // delayed by the layout, not by the user. Without this freeze the
+                // outcome is press-order dependent: when the tap-hold key is pressed
+                // first it queues the other key so both arrive together, but when the
+                // plain key is pressed first it races ahead and the deadline can
+                // expire before the delayed key ever arrives (chord lost).
+                if !layout_pending && self.zchd_ticks_until_disable > 0 {
                     self.zchd_ticks_until_disable = self.zchd_ticks_until_disable.saturating_sub(1);
                     if self.zchd_ticks_until_disable == 0 {
                         log::debug!("zippy enable->disable");
@@ -606,8 +616,8 @@ impl ZchState {
     }
 
     /// Tick the zch output state.
-    pub(crate) fn zch_tick(&mut self, is_caps_word_active: bool) {
-        self.zchd.zchd_tick(is_caps_word_active);
+    pub(crate) fn zch_tick(&mut self, is_caps_word_active: bool, layout_pending: bool) {
+        self.zchd.zchd_tick(is_caps_word_active, layout_pending);
     }
 
     /// Returns true if zch state has no further processing so the idling optimization can
