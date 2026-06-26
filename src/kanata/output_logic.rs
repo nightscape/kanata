@@ -143,10 +143,10 @@ pub(super) fn zippy_is_idle() -> bool {
     }
 }
 
-pub(super) fn zippy_tick(_caps_word_is_active: bool) {
+pub(super) fn zippy_tick(_caps_word_is_active: bool, _layout_pending: bool) {
     #[cfg(feature = "zippychord")]
     {
-        zch().zch_tick(_caps_word_is_active)
+        zch().zch_tick(_caps_word_is_active, _layout_pending)
     }
 }
 

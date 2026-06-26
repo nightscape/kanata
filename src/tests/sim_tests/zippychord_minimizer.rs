@@ -581,7 +581,6 @@ struct Minimized {
     kbd: String,
     tsv: String,
     kept_units: Vec<String>,
-    mask: Vec<bool>,
 }
 
 fn minimize(captured: &Captured) -> Minimized {
@@ -639,7 +638,6 @@ fn minimize(captured: &Captured) -> Minimized {
         kbd,
         tsv,
         kept_units,
-        mask,
     }
 }
 
@@ -752,30 +750,17 @@ fn build_captured_metamorphic(
 }
 
 // ---------------------------------------------------------------------------
-// Builtin repro: the tap-hold press-order bug (mirrors
-// `sim_zippy_taphold_chord_press_order_dependent`).
+// A small in-repo config used as a parse/unit-classification fixture for the
+// structural tests below. (It was once the tap-hold press-order bug repro; that
+// bug is now fixed, so the end-to-end minimizer self-tests that needed an open
+// bug were removed. The minimizer tool itself is still exercised via
+// `minimize_external`.)
 // ---------------------------------------------------------------------------
 
 static BUILTIN_KBD: &str = "(defsrc spc n)\n\
     (deflayer base (tap-hold 200 200 spc (layer-while-held l2)) n)\n\
     (deflayer l2 spc n)\n\
     (defzippy file on-first-press-chord-deadline 20 idle-reactivate-time 100 smart-space full)";
-static BUILTIN_TSV: &str = "\n n\tno\n";
-
-fn builtin_captured() -> Captured {
-    build_captured_metamorphic(
-        BUILTIN_KBD.to_string(),
-        BUILTIN_TSV,
-        vec!["spc".to_string(), "n".to_string()],
-        // Mirrors the recorded gesture: `d:_ t:5 d:_ t:10 u:_ t:5 u:_ t:300`.
-        ClusterTiming {
-            gap: 5,
-            hold: 10,
-            relgap: 5,
-            settle: 300,
-        },
-    )
-}
 
 // ---------------------------------------------------------------------------
 // Entry points
@@ -952,36 +937,13 @@ fn minimize_external() {
     println!("kept units: {:?}", min.kept_units);
 }
 
-/// CI exercise of the whole pipeline on a small in-repo repro. Asserts
-/// **properties** of the minimum, not exact identity (proptest minima are not
-/// stable across versions/inputs): the triggering chord survives, a `tap-hold`
-/// on the chord key survives (collapsing it kills the bug, so the differential/
-/// metamorphic predicate forbids it), and the kept unit count is small.
-#[test]
-fn minimize_builtin_taphold_repro() {
-    let captured = builtin_captured();
-    let min = minimize(&captured);
-
-    println!("=== minimized .kbd ===\n{}\n=== minimized .tsv ===\n{}", min.kbd, min.tsv);
-    println!("kept units: {:?}", min.kept_units);
-
-    assert!(
-        min.tsv.contains("\tno"),
-        "the triggering chord (` n`->`no`) must survive; got tsv: {:?}",
-        min.tsv
-    );
-    assert!(
-        min.kbd.contains("tap-hold"),
-        "a tap-hold on the chord key must survive (collapsing it removes the bug); got kbd: {}",
-        min.kbd
-    );
-    let kept = min.mask.iter().filter(|&&b| b).count();
-    assert!(
-        kept <= 8,
-        "expected a small minimum (<= 8 kept units), got {kept}: {:?}",
-        min.kept_units
-    );
-}
+// NOTE: the end-to-end builtin self-test (`minimize_builtin_taphold_repro`) and
+// the `predicate_tests` module were removed when the tap-hold press-order bug
+// they minimized was fixed — they structurally require an *open* bug (a config
+// whose press orders diverge) as a fixture, and a synthetic non-bug divergence is
+// exactly what the predicate is designed to reject. Re-add an analogous self-test
+// against the next real config bug. The tool stays exercised via
+// `minimize_external` and the structural unit tests below.
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -1157,87 +1119,5 @@ mod kbd_tests {
         assert_eq!(options, 3, "deadline, idle-reactivate, smart-space");
         assert_eq!(collapses, 1, "the tap-hold on spc");
         assert_eq!(chords, 1);
-    }
-}
-
-#[cfg(test)]
-mod predicate_tests {
-    use super::*;
-
-    #[test]
-    fn builtin_full_config_diverges() {
-        // Pre-flight sanity: the full builtin config reproduces (the two press
-        // orders disagree).
-        let captured = builtin_captured();
-        let mask = vec![true; captured.mask_len()];
-        assert!(captured.reproduces(&mask));
-    }
-
-    /// Slippage guard. A naive "any press-order divergence ⇒ bug" predicate is
-    /// unsound: with the chord deleted (and the tap-hold collapsed so the config
-    /// still parses) the two orders type the held keys literally in press order
-    /// — " n" vs "n " — a divergence that is *expected* behavior, not the bug.
-    /// The naive predicate accepts that reduction (dropping the bug itself); the
-    /// exact-output differential predicate rejects it. This is why the
-    /// differential capture matters.
-    #[test]
-    fn slippage_naive_predicate_would_drop_chord() {
-        let captured = builtin_captured();
-        let nc = captured.units.len();
-        // Reduce away the chord AND the tap-hold (keeps the config parse-valid).
-        let mut mask = vec![true; captured.mask_len()];
-        for (i, u) in captured.units.iter().enumerate() {
-            if matches!(
-                u,
-                ConfigUnit::DropChord { .. } | ConfigUnit::Collapse { .. }
-            ) {
-                mask[i] = false;
-            }
-        }
-        let (kbd, tsv) = captured.reconstruct_config(&mask[..nc]);
-        assert!(!tsv.contains("\tno"), "this reduction drops the chord");
-
-        // Naive predicate: "any in-window divergence" — WRONGLY true here.
-        let Predicate::Metamorphic { cluster, timing, .. } = &captured.predicate else {
-            unreachable!()
-        };
-        let outs: Vec<String> = permutations(cluster)
-            .iter()
-            .map(|o| {
-                run_gesture(&captured.tsv_file_name, &kbd, &tsv, &cluster_gesture(o, timing))
-                    .expect("parses")
-            })
-            .collect();
-        let naive_reproduces = !outs.windows(2).all(|w| w[0] == w[1]);
-        assert!(
-            naive_reproduces,
-            "naive any-divergence predicate is fooled by literal press-order ({outs:?})"
-        );
-
-        // Differential predicate (the real one): correctly rejects this drop.
-        assert!(
-            !captured.reproduces(&mask),
-            "exact-output predicate must NOT accept a config with the chord deleted"
-        );
-    }
-
-    #[test]
-    fn collapsing_taphold_removes_the_bug() {
-        // The slippage guard's core claim: if the tap-hold is collapsed, the two
-        // press orders agree again (bug gone) — which is exactly why the
-        // minimizer must NOT collapse it.
-        let captured = builtin_captured();
-        let mut mask = vec![true; captured.mask_len()];
-        // Find the Collapse unit and turn it off (collapse the tap-hold).
-        let collapse_idx = captured
-            .units
-            .iter()
-            .position(|u| matches!(u, ConfigUnit::Collapse { .. }))
-            .expect("a collapse unit exists");
-        mask[collapse_idx] = false;
-        assert!(
-            !captured.reproduces(&mask),
-            "collapsing the tap-hold should remove the divergence"
-        );
     }
 }

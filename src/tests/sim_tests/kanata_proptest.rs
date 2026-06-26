@@ -22,9 +22,11 @@
 //!   with tap output ≠ input. Kept as a fast/isolated slice because it provides an
 //!   observable and a coverage region (tap≠self) the coupled net-text model cannot.
 //! - `interaction_taphold_zippy_order_independent` — the chord×tap-hold overlap
-//!   (a key that is both), judged by a metamorphic determinism oracle. `#[ignore]`d:
-//!   RED against the documented press-order bug. The coupled model does NOT
-//!   generate this overlap (chord keys and tap-hold inputs are disjoint alphabets).
+//!   (a key that is both), judged by a metamorphic determinism oracle. GREEN since
+//!   the press-order bug was fixed (zippychord freezes its chord deadline while the
+//!   layout is still deferring a tap-hold decision; see `zchd_tick`). The coupled
+//!   model does NOT generate this overlap (chord keys and tap-hold inputs are
+//!   disjoint alphabets).
 //!
 //! Coverage / deferred dimensions and the oracle/decomposition design are tracked
 //! in ZIPPY_PBT_NOTES.md.
@@ -852,14 +854,22 @@ pub(super) fn capset(caps: &[Cap]) -> CapSet {
     caps.iter().copied().collect()
 }
 
-/// One catalog invariant over the raw cumulative event stream, tagged with the
-/// component capabilities it requires present (`needs_pos`) and absent
-/// (`needs_neg`). `id` is stable so selection-parity checks can name it.
+/// What an invariant sees after a transition: the raw cumulative output event
+/// stream, plus whether the SUT is *quiescent* (all physical input keys released
+/// and output flushed). Some invariants (e.g. clean-release) only hold at rest.
+pub(super) struct InvCtx<'a> {
+    pub events: &'a str,
+    pub quiescent: bool,
+}
+
+/// One catalog invariant, tagged with the component capabilities it requires
+/// present (`needs_pos`) and absent (`needs_neg`). `id` is stable so
+/// selection-parity checks can name it.
 struct Invariant {
     id: &'static str,
     needs_pos: &'static [Cap],
     needs_neg: &'static [Cap],
-    check: fn(&str) -> Result<(), String>,
+    check: fn(&InvCtx) -> Result<(), String>,
 }
 
 impl Invariant {
@@ -869,22 +879,67 @@ impl Invariant {
     }
 }
 
+fn inv_no_double_press(ctx: &InvCtx) -> Result<(), String> {
+    check_no_double_press(ctx.events)
+}
+
+// NOTE: a tempting "no release without a matching press" invariant is NOT sound
+// for kanata. Zippychord's capitalize idiom re-asserts a key as `↑X ↓X` while
+// shift is held (see `sim_zippychord_capitalize`), and when the eager `↓X` was
+// not emitted it issues a *phantom* `↑X` — harmless on a real OS (releasing an
+// unheld key is a no-op). The catalog process discovered this by adding the
+// invariant and watching it fail on intended behaviour; it was dropped rather
+// than weakened to model the idiom. (Deferred: a refined version that tolerates
+// the `↑X ↓X` re-assert could be added later.)
+
+/// At rest (quiescent), no output key may remain held: every `out:↓` must have a
+/// matching `out:↑`. Catches dangling held keys — e.g. the leading-space eager
+/// `Space↓` that is never released. Subsumes modifier-balance at rest. Only runs
+/// at quiescence (a key held mid-gesture is legitimate).
+fn inv_clean_release(ctx: &InvCtx) -> Result<(), String> {
+    if !ctx.quiescent {
+        return Ok(());
+    }
+    let mut down: BTreeSet<&str> = BTreeSet::new();
+    for tok in ctx.events.split_whitespace() {
+        if let Some(name) = tok.strip_prefix("out:↓") {
+            down.insert(name);
+        } else if let Some(name) = tok.strip_prefix("out:↑") {
+            down.remove(name);
+        }
+    }
+    if down.is_empty() {
+        Ok(())
+    } else {
+        let held: Vec<&str> = down.into_iter().collect();
+        Err(format!("keys still held at rest: {}", held.join(", ")))
+    }
+}
+
 /// The single shared catalog. Authored once; every slice runs the selected
 /// subset over the same tick. Add an entry here and it lights up every slice
 /// that has its capabilities — no per-slice duplication.
-static INVARIANTS: &[Invariant] = &[Invariant {
-    id: "no_double_press",
-    needs_pos: &[Cap::OutputKeyState],
-    needs_neg: &[],
-    check: check_no_double_press,
-}];
+static INVARIANTS: &[Invariant] = &[
+    Invariant {
+        id: "no_double_press",
+        needs_pos: &[Cap::OutputKeyState],
+        needs_neg: &[],
+        check: inv_no_double_press,
+    },
+    Invariant {
+        id: "clean_release",
+        needs_pos: &[Cap::OutputKeyState],
+        needs_neg: &[],
+        check: inv_clean_release,
+    },
+];
 
-/// Run every selected invariant over one tick's cumulative event stream;
-/// returns the offending invariant id + message on the first violation.
-pub(super) fn run_invariants(present: &CapSet, raw: &str) -> Result<(), (&'static str, String)> {
+/// Run every selected invariant over one transition's outcome; returns the
+/// offending invariant id + message on the first violation.
+pub(super) fn run_invariants(present: &CapSet, ctx: &InvCtx) -> Result<(), (&'static str, String)> {
     for inv in INVARIANTS {
         if inv.selected(present) {
-            (inv.check)(raw).map_err(|e| (inv.id, e))?;
+            (inv.check)(ctx).map_err(|e| (inv.id, e))?;
         }
     }
     Ok(())
@@ -1026,7 +1081,15 @@ impl StateMachineTest for Sut {
             Cap::ZippyState,
             Cap::LayoutState,
         ]);
-        if let Err((id, e)) = run_invariants(&present, &raw) {
+        // Every generated transition presses then releases all its keys, so the
+        // SUT is quiescent afterwards (no physical key held) — clean-release then
+        // requires the output stream to be balanced too.
+        let quiescent = crate::PRESSED_KEYS.lock().is_empty();
+        let ctx = InvCtx {
+            events: &raw,
+            quiescent,
+        };
+        if let Err((id, e)) = run_invariants(&present, &ctx) {
             panic!(
                 "invariant `{id}` violated: {e}\n  transition: {transition:?}\n  cfg: {}\n  dict: {}\n  raw: {raw}",
                 ref_state.cfg_string(),
@@ -1440,7 +1503,12 @@ impl StateMachineTest for ThSut {
         // Same shared catalog as the zippychord slice, selected by this slice's
         // components: the output stream and the layout/layer resolution state.
         let present = capset(&[Cap::OutputKeyState, Cap::LayoutState]);
-        if let Err((id, e)) = run_invariants(&present, &raw) {
+        let quiescent = crate::PRESSED_KEYS.lock().is_empty();
+        let ctx = InvCtx {
+            events: &raw,
+            quiescent,
+        };
+        if let Err((id, e)) = run_invariants(&present, &ctx) {
             panic!(
                 "invariant `{id}` violated: {e}\n  transition: {transition:?}\n  cfg: {}\n  raw: {raw}",
                 ref_state.cfg_string(),
@@ -1478,14 +1546,14 @@ prop_state_machine_persisted! {
 // no prediction: a chord is a set, so pressing its keys in either micro-order is
 // the same physical gesture and MUST produce the same visible text.
 //
-// This is the harness auto-discovering the documented press-order bug (the
-// pinned regression `zippychord_sim_tests::sim_zippy_taphold_chord_press_order_dependent`):
-// space is a 200ms tap-hold thumb key, the chord is leading-space ` n`->`no`,
-// and `n`-first vs `space`-first diverge. The test is `#[ignore]`d because it is
-// RED against current behaviour (it asserts the *intended* invariant, not the
-// buggy status quo); run it with `--ignored` to see the shrunk counterexample.
-// It marks exactly the deferred interaction dimension this prototype exists to
-// reach; un-ignore it once the press-order bug is fixed.
+// This is the harness reproduction of the press-order bug (the pinned regression
+// `zippychord_sim_tests::sim_zippy_taphold_chord_press_order_dependent`): space is
+// a 200ms tap-hold thumb key, the chord is leading-space ` n`->`no`, and
+// `n`-first vs `space`-first used to diverge. The test asserts the *intended*
+// invariant (a chord is a set ⇒ press order must not change the output). It is now
+// GREEN: the bug is fixed by freezing the zippychord chord deadline while the
+// layout is still deferring a tap-hold decision (see `zchd_tick`). It guards
+// exactly the deferred interaction dimension this prototype exists to reach.
 fn sim_zippy_file(cfg: &str, input: &str, content: &str) -> String {
     let mut fc = FxHashMap::default();
     fc.insert("file".to_string(), content.to_string());
@@ -1495,7 +1563,6 @@ fn sim_zippy_file(cfg: &str, input: &str, content: &str) -> String {
 proptest! {
     #![proptest_config(Config { cases: 64, .. Config::default() })]
     #[test]
-    #[ignore = "RED: framework reproduction of the tap-hold x zippychord press-order bug; un-ignore when fixed"]
     fn interaction_taphold_zippy_order_independent(
         deadline in 10u16..=80,
         hold_gap in 5u16..=40,
@@ -1590,16 +1657,42 @@ mod catalog_selection_tests {
     #[test]
     fn planted_violation_is_caught_when_selected_and_honestly_skipped_when_absent() {
         // A double-press the key-state invariant must reject.
-        let bad = "out:↓A out:↓A";
+        let bad = InvCtx {
+            events: "out:↓A out:↓A",
+            quiescent: true,
+        };
         // Selected (OutputKeyState present) => caught with teeth.
         assert!(
-            run_invariants(&coupled_caps(), bad).is_err(),
+            run_invariants(&coupled_caps(), &bad).is_err(),
             "selected key-state invariant failed to catch a planted double-press"
         );
         // Absent (no OutputKeyState) => the invariant is *deselected*, so the run
         // is vacuously ok. This is honest non-selection, NOT a stubbed/faked pass:
         // a slice without the output-stream component genuinely cannot judge it.
-        assert!(run_invariants(&capset(&[Cap::VisibleText]), bad).is_ok());
+        assert!(run_invariants(&capset(&[Cap::VisibleText]), &bad).is_ok());
+    }
+
+    #[test]
+    fn planted_dangling_key_is_caught_only_at_quiescence() {
+        // A held key with no release. At rest it is a clean-release violation;
+        // mid-gesture (not quiescent) a held key is legitimate, so it is allowed.
+        let held = "out:↓A";
+        let at_rest = InvCtx {
+            events: held,
+            quiescent: true,
+        };
+        let mid_gesture = InvCtx {
+            events: held,
+            quiescent: false,
+        };
+        assert!(
+            run_invariants(&coupled_caps(), &at_rest).is_err(),
+            "clean_release failed to catch a key still held at rest"
+        );
+        assert!(
+            run_invariants(&coupled_caps(), &mid_gesture).is_ok(),
+            "a key held mid-gesture must not be flagged"
+        );
     }
 
     #[test]

@@ -740,31 +740,32 @@ static ZIPPY_LEADING_SPACE_CONTENT: &str = "\n a\ta\n das\tdass\ndas\tdas\n";
 static ZIPPY_CFG_DEADLINE50: &str =
     "(defsrc lalt)(deflayer base (caps-word 2000))(defzippy file on-first-press-chord-deadline 50)";
 
-// The same press-and-hold of SPACE+a produces THREE different outputs depending
-// on (1) whether zippychord is currently enabled or in its temporary post-typing
-// disabled window, and (2) the random micro-order of the two near-simultaneous
-// presses. This is the reported non-determinism: "a", "a ", or " a" for what is
-// physically the same gesture.
-// Regression test for a press-order-dependent zippychord bug that the
-// state-machine PBT (`kanata_proptest.rs`) CANNOT catch: the PBT builds
-// its SUT from a trivial passthrough layout, so layout output reaches zippychord
-// immediately and identically regardless of press order. The bug only appears
-// once a chord-participating key is a `tap-hold` (or layer) key, because then the
-// layout *delays* that key's tap output by an order/timing-dependent amount.
+// Press-order-dependent zippychord bug that the coupled state-machine PBT
+// (`kanata_proptest.rs`) CANNOT catch, because its zippy + tap-hold keys are
+// drawn from disjoint alphabets — no key is ever both a chord participant and a
+// tap-hold action, which is the precondition for this bug. (The PBT's
+// `interaction_taphold_zippy_order_independent` IS the overlap reproduction; this
+// is its deterministic sibling.) The bug needs a chord-participating key that is a
+// `tap-hold` (or layer) key: the layout then *delays* that key's tap output by an
+// order/timing-dependent amount.
 //
 // Here SPACE is `(tap-hold 200 200 spc ...)` while the chord deadline is 20 ticks
 // (mirrors the reported real config: space is a 200ms tap-hold thumb key, deadline
-// 50). The chord is " n" -> "no". Pressing the keys in the two orders produces
-// DIFFERENT visible output for the same physical gesture:
+// 50). The chord is " n" -> "no". The two press orders are the SAME physical
+// gesture (a chord is a set) and MUST produce the same visible text "no ":
 //
 //   - 'n' first: 'n' starts the 20-tick chord deadline; the space tap-hold has not
-//     resolved by the time the deadline expires, so zippychord disables and the
-//     space later arrives as a literal -> "n " (chord never fires).
+//     resolved by the time it expires, so zippychord disables and space arrives as
+//     a literal -> "n " (chord never fires). <-- BUG.
 //   - space first: the space tap-hold is pending (no deadline started yet); when
 //     'n' lands the space tap resolves and the full chord forms -> "no ".
 //
-// Both orders SHOULD yield the same result ("no "). They do not. This test pins
-// the current (buggy) behavior so a future fix is a deliberate, visible change.
+// This asserts the INTENDED invariant. It was RED until the bug was fixed by
+// freezing the zippychord chord deadline while the layout is still deferring a
+// tap-hold decision (see `zchd_tick` in zippychord.rs); both orders now expand to
+// "no ". (For reference, the pre-fix buggy event streams were:
+//   n-first:     "dn:N t:20ms dn:Space t:6ms up:N t:1ms up:Space"  -> net "n "
+//   space-first: "...dn:Space ...dn:BSpace up:BSpace up:N dn:N dn:O ... dn:Space up:Space..." -> net "no ")
 #[test]
 fn sim_zippy_taphold_chord_press_order_dependent() {
     static CFG: &str = "(defsrc spc n)\
@@ -774,27 +775,22 @@ fn sim_zippy_taphold_chord_press_order_dependent() {
          idle-reactivate-time 100 smart-space full)";
     static CONTENT: &str = "\n n\tno\n";
 
-    // 'n' pressed slightly before space: chord deadline expires before the space
-    // tap-hold resolves -> chord does NOT fire -> literal "n ".
-    let n_first =
-        simulate_with_zippy_file_content(CFG, "d:n t:5 d:spc t:10 u:n t:5 u:spc t:300", CONTENT)
-            .to_ascii();
-    assert_eq!(
-        "dn:N t:20ms dn:Space t:6ms up:N t:1ms up:Space", n_first,
-        "n-first: tap-hold space resolves after the chord deadline -> chord lost (BUG: should be \"no \")"
+    let n_first = overlap_net_text(
+        &simulate_with_zippy_file_content(CFG, "d:n t:5 d:spc t:10 u:n t:5 u:spc t:300", CONTENT)
+            .to_ascii(),
+    );
+    let space_first = overlap_net_text(
+        &simulate_with_zippy_file_content(CFG, "d:spc t:5 d:n t:10 u:spc t:5 u:n t:300", CONTENT)
+            .to_ascii(),
     );
 
-    // space pressed slightly before 'n': space tap-hold is still pending so no
-    // deadline has started; 'n' completes the chord -> "no " (the intended result).
-    let space_first =
-        simulate_with_zippy_file_content(CFG, "d:spc t:5 d:n t:10 u:spc t:5 u:n t:300", CONTENT)
-            .to_ascii();
     assert_eq!(
-        "t:15ms dn:Space t:6ms dn:BSpace up:BSpace up:N dn:N dn:O up:O up:Space dn:Space up:Space \
-         t:1ms up:Space t:1ms up:N",
-        space_first,
-        "space-first: chord fires correctly -> \"no \" (eager participating space `up:Space` \
-         released before the smart-space tap, so the two Space-downs don't coalesce on a real OS)"
+        n_first, space_first,
+        "press order changed the chord output (a chord is a set): n-first={n_first:?} space-first={space_first:?}"
+    );
+    assert_eq!(
+        "no ", n_first,
+        "both press orders must expand the \" n\"->\"no\" chord with a smart trailing space"
     );
 }
 

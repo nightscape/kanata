@@ -1108,7 +1108,15 @@ impl Kanata {
         self.tick_physical_idle_timeout();
         self.macro_on_press_cancel_duration = self.macro_on_press_cancel_duration.saturating_sub(1);
         tick_record_state(&mut self.dynamic_macro_record_state);
-        zippy_tick(self.caps_word.is_some());
+        // The layout is still deferring output when a tap-hold/chord decision is
+        // pending (`waiting`) or events are queued behind one. Zippychord freezes
+        // its chord deadline during this window so a chord whose participant is a
+        // tap-hold key activates regardless of press order (see `zchd_tick`).
+        let layout_pending = {
+            let layout = self.layout.b();
+            layout.waiting.is_some() || !layout.queue.is_empty()
+        };
+        zippy_tick(self.caps_word.is_some(), layout_pending);
         self.prev_keys.clear();
         self.prev_keys.append(&mut self.cur_keys);
         self.tick_held_vkeys();
