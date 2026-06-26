@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc fcd515cfb763a4b642fd15e031eeae2079d0c471e233761bd4e3dfbf7f927055 # shrinks to deadline = 10, hold_gap = 10
+cc 1194d49cebacb35742ccc3aed85d546073f3aa0bc6811b46e8863f1b656bf27d # shrinks to (initial_state, transitions, seen_counter) = (KanataModel { cfg: ModelCfg { smart_space: None }, roots: [Root { lead_space: false, keys: {'a', 'd'}, out: [Char('A'), Char('c'), Char('a'), Char(' ')], followups: [] }, Root { lead_space: true, keys: {'a', 'c', 'd'}, out: [Char('b'), Char('A')], followups: [] }, Root { lead_space: false, keys: {'b'}, out: [Char('B'), Char('c')], followups: [] }, Root { lead_space: true, keys: {'b', 'd'}, out: [Char(' '), Char('a')], followups: [] }], taphold: [ThKey { input: 'u', tap_out: 'u', hold_out: 'x' }], enabled: Enabled, until_enabled: 0, visible: [], prioritized: None, last_act_len: 0, smart_space_sent: false }, [Literal { key: 'u' }, ChordExpansion { target: Root(2), events: [(0, Press('b')), (1, Release('b'))] }], None)
