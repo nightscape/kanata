@@ -6780,6 +6780,7 @@ This configuration enables chorded text expansion.
   smart-space                   $smart-space-cfg  ;; optional
   smart-space-punctuation (                       ;; optional
     $punc1 $punc2 ... $puncN)
+  suppress-space                $suppress-space-cfg ;; optional
   output-character-mappings (    ;; optional
     $character1 $output-mapping1
     $character2 $output-mapping2
@@ -6827,6 +6828,30 @@ will overwrite the default punctuation list
 considered by smart-space;
 if you want to include the default characters,
 you must include them in this configuration.
+
+| `$suppress-space-cfg`
+| Conditionally suppresses the trailing space that smart-space adds
+after an activation.
+This only has an effect when `smart-space` is `add-space-only` or `full`;
+with `smart-space none` there is no trailing space to suppress.
+The options are `not-first-def-key` and `(key $key-name)`.
+
+With `not-first-def-key`,
+the trailing space is added only when the first key you press
+is the first key of the chord as written in the zippy file
+(the leading space for a leading-space chord,
+otherwise the first character);
+pressing any other key of the chord first suppresses the trailing space.
+
+With `(key $key-name)`,
+the trailing space is suppressed whenever `$key-name` is held
+while the chord is typed.
+The key is otherwise passed through with its normal behaviour
+(it is tracked like a modifier and does not take part in chord matching),
+so choose a key whose passthrough is acceptable while chording,
+for example an otherwise-unused modifier.
+
+These two modes are mutually exclusive; configure at most one.
 
 | `$character`
 | A single unicode codepoint for use

@@ -150,6 +150,12 @@ mod inner {
     pub struct ZchChordOutput {
         pub zch_output: Box<[ZchOutput]>,
         pub zch_followups: Option<Arc<Mutex<ZchPossibleChords>>>,
+        /// First key of this chord component as written in the TSV definition
+        /// (the leading space if the component is a leading-space chord,
+        /// otherwise the first character). Used by the `not-first-def-key`
+        /// suppress-space mode to decide whether to add a trailing space based
+        /// on which key the user pressed first.
+        pub zch_first_def_key: Option<OsCode>,
     }
 
     /// Zch output can be uppercase, lowercase, altgr, and shift-altgr characters.
@@ -218,6 +224,22 @@ mod inner {
         Disabled,
     }
 
+    /// User configuration for suppressing the trailing smart space.
+    ///
+    /// - `Disabled`       = never suppress; the trailing space follows `smart-space`.
+    /// - `Key(osc)`       = suppress the trailing space whenever this key is held during the chord.
+    /// - `NotFirstDefKey` = add the trailing space only if the first key the user pressed is the
+    ///   first key of the chord definition; otherwise suppress it.
+    ///
+    /// Only has an effect when `smart-space` is enabled (there is no trailing space to suppress
+    /// otherwise).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum ZchSuppressSpaceCfg {
+        Disabled,
+        Key(OsCode),
+        NotFirstDefKey,
+    }
+
     #[derive(Debug)]
     pub struct ZchConfig {
         /// When, during typing, chord fails to activate, zippychord functionality becomes temporarily
@@ -247,6 +269,9 @@ mod inner {
 
         /// Define keys for punctuation, which is relevant to smart space auto-erasure of added spaces.
         pub zch_cfg_smart_space_punctuation: HashSet<ZchOutput>,
+
+        /// User configuration for suppressing the trailing smart space. See `ZchSuppressSpaceCfg`.
+        pub zch_cfg_suppress_space: ZchSuppressSpaceCfg,
     }
 
     impl Default for ZchConfig {
@@ -255,6 +280,7 @@ mod inner {
                 zch_cfg_ticks_wait_enable: 500,
                 zch_cfg_ticks_chord_deadline: 500,
                 zch_cfg_smart_space: ZchSmartSpaceCfg::Disabled,
+                zch_cfg_suppress_space: ZchSuppressSpaceCfg::Disabled,
                 zch_cfg_smart_space_punctuation: {
                     let mut puncs = HashSet::default();
                     puncs.insert(ZchOutput::Lowercase(OsCode::KEY_DOT));
@@ -377,12 +403,16 @@ mod inner {
         const CHORD_DEADLINE: &str = "on-first-press-chord-deadline";
         const SMART_SPACE: &str = "smart-space";
         const SMART_SPACE_PUNCTUATION: &str = "smart-space-punctuation";
+        const SUPPRESS_SPACE: &str = "suppress-space";
+        const SUPPRESS_SPACE_NOT_FIRST: &str = "not-first-def-key";
+        const SUPPRESS_SPACE_KEY: &str = "key";
 
         let mut idle_reactivate_time_seen = false;
         let mut key_name_mappings_seen = false;
         let mut chord_deadline_seen = false;
         let mut smart_space_seen = false;
         let mut smart_space_punctuation_seen = false;
+        let mut suppress_space_seen = false;
         let mut smart_space_punctuation_val_expr = None;
 
         let mut user_cfg_char_to_output: HashMap<char, Vec<ZchOutput>> = HashMap::default();
@@ -452,6 +482,40 @@ mod inner {
                     smart_space_punctuation_seen = true;
                     // Need to save and parse this later since it makes use of KEY_NAME_MAPPINGS.
                     smart_space_punctuation_val_expr = Some(config_value);
+                }
+
+                SUPPRESS_SPACE => {
+                    if suppress_space_seen {
+                        bail_expr!(
+                            config_name,
+                            "This is the 2nd instance; it can only be defined once"
+                        );
+                    }
+                    suppress_space_seen = true;
+                    config.zch_cfg_suppress_space = match config_value.atom(s.vars()) {
+                        Some(SUPPRESS_SPACE_NOT_FIRST) => ZchSuppressSpaceCfg::NotFirstDefKey,
+                        Some(_) => bail_expr!(
+                            config_value,
+                            "Must be: {SUPPRESS_SPACE_NOT_FIRST} | ({SUPPRESS_SPACE_KEY} <key>)"
+                        ),
+                        None => {
+                            let list = config_value.list(s.vars()).expect("not atom, so list");
+                            if list.len() != 2
+                                || list[0].atom(s.vars()) != Some(SUPPRESS_SPACE_KEY)
+                            {
+                                bail_expr!(
+                                    config_value,
+                                    "Must be: {SUPPRESS_SPACE_NOT_FIRST} | ({SUPPRESS_SPACE_KEY} <key>)"
+                                );
+                            }
+                            let key_name = list[1].atom(s.vars()).ok_or_else(|| {
+                                anyhow_expr!(&list[1], "{SUPPRESS_SPACE_KEY} name must not be a list")
+                            })?;
+                            let osc = str_to_oscode(key_name)
+                                .ok_or_else(|| anyhow_expr!(&list[1], "Unknown key name"))?;
+                            ZchSuppressSpaceCfg::Key(osc)
+                        }
+                    };
                 }
 
                 KEY_NAME_MAPPINGS => {
@@ -577,6 +641,15 @@ mod inner {
             bail_expr!(&rem[0], "zippy config name is missing its value");
         }
 
+        if config.zch_cfg_suppress_space != ZchSuppressSpaceCfg::Disabled
+            && config.zch_cfg_smart_space == ZchSmartSpaceCfg::Disabled
+        {
+            log::warn!(
+                "{SUPPRESS_SPACE} has no effect because {SMART_SPACE} is disabled; \
+                 there is no trailing space to suppress."
+            );
+        }
+
         if let Some(val) = smart_space_punctuation_val_expr {
             config.zch_cfg_smart_space_punctuation = val
                 .list(s.vars())
@@ -662,6 +735,9 @@ mod inner {
                     let mut chord_chars;
                     let mut input_chord = ZchInputKeys::zchik_new();
                     let mut is_space_included;
+                    // First key of the current component in TSV definition order:
+                    // the leading space if present, otherwise the first character.
+                    let mut component_first_def_key: Option<OsCode>;
                     let mut possible_chords_map = zch.clone();
                     let mut next_map: Option<Arc<Mutex<_>>>;
 
@@ -677,6 +753,8 @@ mod inner {
                         if is_space_included {
                             input_chord.zchik_insert(OsCode::KEY_SPACE);
                         }
+                        component_first_def_key =
+                            is_space_included.then_some(OsCode::KEY_SPACE);
 
                         // Parse chord until next space.
                         (chord_chars, input_left_to_parse) =
@@ -696,6 +774,7 @@ mod inner {
                                         line_number
                                     )
                                 })?;
+                                component_first_def_key.get_or_insert(osc);
                                 input_chord.zchik_insert(osc);
                                 Ok(())
                             })?;
@@ -718,6 +797,7 @@ mod inner {
                                     Arc::new(ZchChordOutput {
                                         zch_output: output,
                                         zch_followups: None,
+                                        zch_first_def_key: component_first_def_key,
                                     }),
                                 );
                                 break;
@@ -734,6 +814,8 @@ mod inner {
                                             ZchChordOutput {
                                                 zch_output: next_nested_map.zch_output.clone(),
                                                 zch_followups: Some(map),
+                                                zch_first_def_key: next_nested_map
+                                                    .zch_first_def_key,
                                             }
                                             .into(),
                                         );
@@ -752,6 +834,7 @@ mod inner {
                                     Arc::new(ZchChordOutput {
                                         zch_output: Box::new([]),
                                         zch_followups: Some(map),
+                                        zch_first_def_key: component_first_def_key,
                                     }),
                                 );
                             }

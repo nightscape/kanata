@@ -931,3 +931,114 @@ fn repro_overlap_underdelete() {
         "stray leading char not erased"
     );
 }
+
+// --- suppress-space: press-order trailing space (former bug as feature) ------
+//
+// `suppress-space not-first-def-key`: the trailing smart space is added only
+// when the FIRST key the user pressed is the chord definition's first key;
+// pressing any other chord key first suppresses it. This turns the historically
+// press-order-dependent leading-space behavior into an intentional, opt-in
+// control. See ZIPPY_PBT_NOTES / the zippy memory notes for the original bug.
+
+static SUPPRESS_NOT_FIRST_CFG: &str =
+    "(defsrc)(deflayer base)(defzippy file smart-space full suppress-space not-first-def-key)";
+
+#[test]
+fn sim_zippychord_suppress_space_not_first_def_key() {
+    // chord "dy" -> "day"; the definition's first key is 'd'.
+    // Press 'd' first (== first def key) -> trailing space kept.
+    let d_first = overlap_net_text(
+        &simulate_with_zippy_file_content(
+            SUPPRESS_NOT_FIRST_CFG,
+            "d:d d:y t:10 u:d u:y t:300",
+            ZIPPY_FILE_CONTENT,
+        )
+        .to_ascii(),
+    );
+    assert_eq!("day ", d_first, "d-first matches def -> keep trailing space");
+
+    // Press 'y' first (!= first def key) -> trailing space suppressed.
+    let y_first = overlap_net_text(
+        &simulate_with_zippy_file_content(
+            SUPPRESS_NOT_FIRST_CFG,
+            "d:y d:d t:10 u:y u:d t:300",
+            ZIPPY_FILE_CONTENT,
+        )
+        .to_ascii(),
+    );
+    assert_eq!("day", y_first, "y-first differs from def -> suppress trailing space");
+}
+
+#[test]
+fn sim_zippychord_suppress_space_not_first_def_key_leading_space() {
+    // Leading-space chord " n" -> "no"; the definition's first key is SPACE.
+    // This is the exact shape of the original press-order bug, now a feature.
+    static CFG: &str =
+        "(defsrc)(deflayer base)(defzippy file smart-space full suppress-space not-first-def-key)";
+    static CONTENT: &str = "\n n\tno\n";
+
+    // SPACE first (== first def key) -> keep trailing space -> "no ".
+    let space_first = overlap_net_text(
+        &simulate_with_zippy_file_content(CFG, "d:spc d:n t:10 u:spc u:n t:300", CONTENT).to_ascii(),
+    );
+    assert_eq!("no ", space_first, "space-first matches def -> keep trailing space");
+
+    // 'n' first (!= first def key) -> suppress trailing space -> "no".
+    let n_first = overlap_net_text(
+        &simulate_with_zippy_file_content(CFG, "d:n d:spc t:10 u:n u:spc t:300", CONTENT).to_ascii(),
+    );
+    assert_eq!("no", n_first, "n-first differs from def -> suppress trailing space");
+}
+
+// --- suppress-space: dedicated suppress key ---------------------------------
+//
+// `suppress-space (key bspc)`: holding the configured key while chording
+// suppresses the trailing smart space. The key is tracked like a modifier and
+// is otherwise passed through, so it must be a key whose passthrough is
+// acceptable while chording.
+
+static SUPPRESS_KEY_CFG: &str =
+    "(defsrc)(deflayer base)(defzippy file smart-space full suppress-space (key rctl))";
+
+#[test]
+fn sim_zippychord_suppress_space_key() {
+    // Without the suppress key: trailing space added as usual.
+    let normal = overlap_net_text(
+        &simulate_with_zippy_file_content(
+            SUPPRESS_KEY_CFG,
+            "d:d d:y t:10 u:d u:y t:300",
+            ZIPPY_FILE_CONTENT,
+        )
+        .to_ascii(),
+    );
+    assert_eq!("day ", normal, "no suppress key -> keep trailing space");
+
+    // Suppress key (rctl) held across the chord: trailing space suppressed.
+    let suppressed = overlap_net_text(
+        &simulate_with_zippy_file_content(
+            SUPPRESS_KEY_CFG,
+            "d:rctl t:5 d:d d:y t:10 u:d u:y t:5 u:rctl t:300",
+            ZIPPY_FILE_CONTENT,
+        )
+        .to_ascii(),
+    );
+    assert_eq!("day", suppressed, "suppress key held -> suppress trailing space");
+}
+
+#[test]
+fn sim_zippychord_suppress_space_noop_without_smart_space() {
+    // With smart-space disabled there is no trailing space to begin with, so
+    // suppress-space is inert regardless of press order.
+    static CFG: &str =
+        "(defsrc)(deflayer base)(defzippy file suppress-space not-first-def-key)";
+    let d_first = overlap_net_text(
+        &simulate_with_zippy_file_content(CFG, "d:d d:y t:10 u:d u:y t:300", ZIPPY_FILE_CONTENT)
+            .to_ascii(),
+    );
+    let y_first = overlap_net_text(
+        &simulate_with_zippy_file_content(CFG, "d:y d:d t:10 u:y u:d t:300", ZIPPY_FILE_CONTENT)
+            .to_ascii(),
+    );
+    assert_eq!("day", d_first, "smart-space disabled -> no trailing space");
+    assert_eq!("day", y_first, "smart-space disabled -> no trailing space");
+}
