@@ -15,8 +15,12 @@
 //!   coupling. The reference deliberately does NOT reimplement the keystroke-level
 //!   eager/overlap/backspace accounting NOR the tap-hold-vs-deadline arbitration —
 //!   that is the code under test — so those bugs surface as a mismatch. (This is
-//!   how the common-prefix backspace under-count bug was found.) Observable: net
-//!   visible text.
+//!   how the common-prefix backspace under-count bug was found.) The config also
+//!   varies `suppress-space not-first-def-key`: the trailing smart space is then a
+//!   pure function of the (already shuffled) press order vs the chord's first
+//!   definition key, so the placement oracle predicts it exactly. (The `(key X)`
+//!   suppress mode is a held flag orthogonal to press order — deferred here,
+//!   covered by the deterministic sim tests.) Observable: net visible text.
 //! - `taphold_state_machine` (`ThRef`/`ThModel`/`ThSut`) — tap-hold in ISOLATION,
 //!   a pure construction oracle on the lower-level **event stream** (`event_seq`),
 //!   with tap output ≠ input. Kept as a fast/isolated slice because it provides an
@@ -99,9 +103,28 @@ enum SmartSpace {
     Full,
 }
 
+/// `suppress-space` config, modelled for the PBT.
+///
+/// Only the press-order mode (`not-first-def-key`) is generated here: it is a
+/// pure function of press order + dictionary, which this harness already varies
+/// (`prop_shuffle`), so the placement oracle stays exact. The `(key X)` mode is
+/// a held-flag orthogonal to press order and is covered by the deterministic sim
+/// tests instead (threading an extra held key through every gesture would be
+/// invasive for little marginal coverage). Deferred dimension; see
+/// ZIPPY_PBT_NOTES.md.
+#[derive(Clone, Debug, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+enum SuppressSpace {
+    #[default]
+    None,
+    NotFirstDefKey,
+}
+
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 struct ModelCfg {
     smart_space: SmartSpace,
+    // `default` so older persisted seeds (no suppress_space) still deserialize.
+    #[serde(default)]
+    suppress_space: SuppressSpace,
 }
 
 // ---------------------------------------------------------------------------
@@ -214,6 +237,10 @@ impl KanataModel {
             SmartSpace::AddOnly => "add-space-only",
             SmartSpace::Full => "full",
         };
+        let suppress = match self.cfg.suppress_space {
+            SuppressSpace::None => String::new(),
+            SuppressSpace::NotFirstDefKey => " suppress-space not-first-def-key".to_string(),
+        };
         // Tap-hold keys join the layout; chord keys remain unmapped passthrough
         // (zippychord reads the layout's output). tap output = the key itself so a
         // tap is an ordinary keystroke; hold output is a distinct non-chord key.
@@ -229,7 +256,7 @@ impl KanataModel {
         }
         format!(
             "(defsrc {src})(deflayer base {lay})(defzippy file \
-             on-first-press-chord-deadline {DEADLINE} idle-reactivate-time {WAIT} smart-space {ss})"
+             on-first-press-chord-deadline {DEADLINE} idle-reactivate-time {WAIT} smart-space {ss}{suppress})"
         )
     }
 
@@ -306,6 +333,29 @@ impl KanataModel {
         }
     }
 
+    /// First key of the target chord as written in the TSV definition: the
+    /// leading space for a leading-space root, otherwise the first character
+    /// (roots serialize their `BTreeSet` keys in sorted order, so the first char
+    /// is the minimum — which is exactly what the parser records as the chord's
+    /// first def key). Followup components are a single key, so it is that key.
+    /// Mirrors `ZchChordOutput::zch_first_def_key` in the runtime.
+    fn first_def_key(&self, target: &Target) -> Option<char> {
+        match target {
+            Target::Root(i) => self.roots.get(*i).map(|r| {
+                if r.lead_space {
+                    ' '
+                } else {
+                    *r.keys.iter().next().expect("root has >=1 key")
+                }
+            }),
+            Target::Followup(i) => self
+                .prioritized
+                .as_ref()
+                .and_then(|c| c.get(*i))
+                .map(|c| c.key),
+        }
+    }
+
     fn apply_out(&mut self, out: &[OutItem]) {
         for item in out {
             match item {
@@ -329,7 +379,13 @@ impl KanataModel {
         self.last_act_len = 0;
     }
 
-    fn activate(&mut self, out: &[OutItem], followups: Vec<Child>, is_followup: bool) {
+    fn activate(
+        &mut self,
+        out: &[OutItem],
+        followups: Vec<Child>,
+        is_followup: bool,
+        order_suppresses: bool,
+    ) {
         if is_followup {
             // Followup replaces the prior activation's output (sitting at the tail).
             let n = self.last_act_len.min(self.visible.len());
@@ -338,9 +394,12 @@ impl KanataModel {
         self.apply_out(out);
         let mut lal = display_len(out).max(0) as usize;
         // Smart space: add a trailing space unless output is empty or ends in
-        // space/backspace.
+        // space/backspace — or `suppress-space` suppresses it for this press
+        // order. A suppressed trailing space is identical to smart-space being
+        // off: the space (and its smart_space_sent state) is simply not added.
         if self.cfg.smart_space != SmartSpace::None {
-            let suppress = out.is_empty()
+            let suppress = order_suppresses
+                || out.is_empty()
                 || matches!(out.last(), Some(OutItem::Backspace))
                 || matches!(out.last(), Some(OutItem::Char(' ')));
             if !suppress {
@@ -540,8 +599,19 @@ impl ReferenceStateMachine for KanataRef {
             }
             KanataTransition::ChordExpansion { target, events } => {
                 if state.enabled == Enabled::Enabled {
+                    // `not-first-def-key`: the trailing space is suppressed unless
+                    // the first key pressed is the chord's first definition key.
+                    let order_suppresses = match state.cfg.suppress_space {
+                        SuppressSpace::None => false,
+                        SuppressSpace::NotFirstDefKey => {
+                            let first_pressed =
+                                KanataTransition::press_order(events).first().copied();
+                            let first_def = state.first_def_key(target);
+                            matches!((first_pressed, first_def), (Some(p), Some(d)) if p != d)
+                        }
+                    };
                     let (out, followups, is_followup) = state.resolve(target);
-                    state.activate(&out, followups, is_followup);
+                    state.activate(&out, followups, is_followup, order_suppresses);
                     // Activation keeps zippy enabled.
                     state.enabled = Enabled::Enabled;
                 } else {
@@ -658,7 +728,20 @@ fn arb_cfg() -> impl Strategy<Value = ModelCfg> {
         Just(SmartSpace::AddOnly),
         Just(SmartSpace::Full),
     ]
-    .prop_map(|smart_space| ModelCfg { smart_space })
+    .prop_flat_map(|smart_space| {
+        // suppress-space only has an effect with an active smart-space; pairing
+        // it with `none` would just be inert (and warn at parse), so concentrate
+        // coverage where the trailing space actually exists.
+        let suppress: BoxedStrategy<SuppressSpace> = if smart_space == SmartSpace::None {
+            Just(SuppressSpace::None).boxed()
+        } else {
+            prop_oneof![Just(SuppressSpace::None), Just(SuppressSpace::NotFirstDefKey)].boxed()
+        };
+        suppress.prop_map(move |suppress_space| ModelCfg {
+            smart_space,
+            suppress_space,
+        })
+    })
 }
 
 fn arb_out() -> impl Strategy<Value = Vec<OutItem>> {
@@ -1146,8 +1229,18 @@ mod reference_tests {
         }
     }
     fn model(smart_space: SmartSpace, roots: Vec<Root>) -> KanataModel {
+        model_suppress(smart_space, SuppressSpace::None, roots)
+    }
+    fn model_suppress(
+        smart_space: SmartSpace,
+        suppress_space: SuppressSpace,
+        roots: Vec<Root>,
+    ) -> KanataModel {
         KanataModel {
-            cfg: ModelCfg { smart_space },
+            cfg: ModelCfg {
+                smart_space,
+                suppress_space,
+            },
             roots,
             taphold: vec![],
             enabled: Enabled::Enabled,
@@ -1243,6 +1336,66 @@ mod reference_tests {
         let m = apply(m, &chord(Target::Root(0), "a"));
         assert_eq!("day ", vis(&m));
         let m = apply(m, &chord(Target::Followup(0), "b"));
+        assert_eq!("Monday ", vis(&m));
+    }
+
+    #[test]
+    fn ref_suppress_not_first_def_key() {
+        // Chord {a,b}; first def key is the min, 'a'.
+        // Press 'a' first (== first def) -> keep the trailing space.
+        let m = model_suppress(
+            SmartSpace::AddOnly,
+            SuppressSpace::NotFirstDefKey,
+            vec![root(false, "ab", "X", vec![])],
+        );
+        let kept = apply(m, &chord(Target::Root(0), "ab"));
+        assert_eq!("X ", vis(&kept));
+
+        // Press 'b' first (!= first def) -> suppress the trailing space.
+        let m = model_suppress(
+            SmartSpace::AddOnly,
+            SuppressSpace::NotFirstDefKey,
+            vec![root(false, "ab", "X", vec![])],
+        );
+        let suppressed = apply(m, &chord(Target::Root(0), "ba"));
+        assert_eq!("X", vis(&suppressed));
+    }
+
+    #[test]
+    fn ref_suppress_not_first_def_key_leading_space() {
+        // Leading-space chord " a" -> "a"; first def key is SPACE.
+        // SPACE first (== first def) -> keep trailing space -> "a ".
+        let m = model_suppress(
+            SmartSpace::Full,
+            SuppressSpace::NotFirstDefKey,
+            vec![root(true, "a", "a", vec![])],
+        );
+        let kept = apply(m, &chord(Target::Root(0), " a"));
+        assert_eq!("a ", vis(&kept));
+
+        // 'a' first (!= first def SPACE) -> suppress -> "a".
+        let m = model_suppress(
+            SmartSpace::Full,
+            SuppressSpace::NotFirstDefKey,
+            vec![root(true, "a", "a", vec![])],
+        );
+        let suppressed = apply(m, &chord(Target::Root(0), "a "));
+        assert_eq!("a", vis(&suppressed));
+    }
+
+    #[test]
+    fn ref_suppress_followup_single_key_never_suppressed() {
+        // A followup component is a single key, so the first pressed key is
+        // always its first def key -> followups keep their trailing space.
+        let m = model_suppress(
+            SmartSpace::AddOnly,
+            SuppressSpace::NotFirstDefKey,
+            vec![root(false, "ab", "day", vec![child('c', "Monday", vec![])])],
+        );
+        // Root pressed 'a' first (== def) -> "day ".
+        let m = apply(m, &chord(Target::Root(0), "ab"));
+        assert_eq!("day ", vis(&m));
+        let m = apply(m, &chord(Target::Followup(0), "c"));
         assert_eq!("Monday ", vis(&m));
     }
 

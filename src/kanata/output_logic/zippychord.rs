@@ -108,6 +108,14 @@ struct ZchDynamicState {
     /// Tracks smart spacing state so punctuation characters
     /// can know whether a space needs to be erased or not.
     zchd_smart_space_state: ZchSmartSpaceState,
+    /// First key pressed in the current input sequence (re-armed whenever input
+    /// goes from empty to non-empty). Used by the `not-first-def-key`
+    /// suppress-space mode to compare against the activated chord's first
+    /// definition key.
+    zchd_first_pressed_key: Option<OsCode>,
+    /// Held state of the configured suppress-space key (mode `(key <key>)`),
+    /// tracked like altgr: toggled only by that key's own press/release.
+    zchd_is_suppress_space_active: bool,
 }
 
 impl ZchDynamicState {
@@ -193,6 +201,7 @@ impl ZchDynamicState {
         self.zchd_ticks_until_disable = 0;
         self.zchd_ticks_until_enabled = 0;
         self.zchd_smart_space_state = ZchSmartSpaceState::Inactive;
+        self.zchd_first_pressed_key = None;
         self.zchd_clear_history();
     }
 
@@ -213,6 +222,9 @@ impl ZchDynamicState {
     }
 
     fn zchd_press_key(&mut self, osc: OsCode) {
+        if self.zchd_input_keys.zchik_is_empty() {
+            self.zchd_first_pressed_key = Some(osc);
+        }
         self.zchd_input_keys.zchik_insert(osc);
     }
 
@@ -274,6 +286,16 @@ impl ZchState {
         osc: OsCode,
     ) -> Result<(), std::io::Error> {
         if self.zch_chords.is_empty() {
+            return kb.press_key(osc);
+        }
+        // The suppress-space key is a flag that does not participate in chord
+        // matching, only recording its held state (like altgr). It passes
+        // through with its normal output, so choose a key whose passthrough is
+        // acceptable while chording.
+        if let ZchSuppressSpaceCfg::Key(k) = self.zch_cfg.zch_cfg_suppress_space
+            && osc == k
+        {
+            self.zchd.zchd_is_suppress_space_active = true;
             return kb.press_key(osc);
         }
         match osc {
@@ -498,7 +520,25 @@ impl ZchState {
                     }
                 }
 
-                if self.zch_cfg.zch_cfg_smart_space != ZchSmartSpaceCfg::Disabled
+                // Whether the user wants to suppress the trailing smart space
+                // for this activation. `Key` mode suppresses while the flag key
+                // is held; `NotFirstDefKey` suppresses unless the first key the
+                // user pressed is the chord definition's first key. A suppressed
+                // trailing space is behaviorally identical to `smart-space`
+                // being disabled: the whole block below (including the eager
+                // participating-space release) is skipped, leaving any eager
+                // space held until its physical release, exactly as the
+                // smart-space-disabled path does.
+                let suppress_space = match self.zch_cfg.zch_cfg_suppress_space {
+                    ZchSuppressSpaceCfg::Disabled => false,
+                    ZchSuppressSpaceCfg::Key(_) => self.zchd.zchd_is_suppress_space_active,
+                    ZchSuppressSpaceCfg::NotFirstDefKey => matches!(
+                        (self.zchd.zchd_first_pressed_key, a.zch_first_def_key),
+                        (Some(first), Some(def)) if first != def
+                    ),
+                };
+                if !suppress_space
+                    && self.zch_cfg.zch_cfg_smart_space != ZchSmartSpaceCfg::Disabled
                     && a.zch_output
                         .last()
                         .map(|out| !matches!(out.osc(), OsCode::KEY_SPACE | OsCode::KEY_BACKSPACE))
@@ -593,6 +633,12 @@ impl ZchState {
         osc: OsCode,
     ) -> Result<(), std::io::Error> {
         if self.zch_chords.is_empty() {
+            return kb.release_key(osc);
+        }
+        if let ZchSuppressSpaceCfg::Key(k) = self.zch_cfg.zch_cfg_suppress_space
+            && osc == k
+        {
+            self.zchd.zchd_is_suppress_space_active = false;
             return kb.release_key(osc);
         }
         match osc {
