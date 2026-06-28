@@ -1591,6 +1591,7 @@ Yet another chording implementation - zippychord:
 (defzippy
   zippy.txt
   on-first-press-chord-deadline 500
+  followup-chord-deadline       500 ;; optional; defaults to on-first-press-chord-deadline
   idle-reactivate-time          500
   smart-space-punctuation (? ! . , ; :)
   output-character-mappings (

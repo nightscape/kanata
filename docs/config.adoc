@@ -6776,6 +6776,7 @@ This configuration enables chorded text expansion.
 (defzippy
   $zippy-filename ;; required
   on-first-press-chord-deadline $deadline-millis  ;; optional
+  followup-chord-deadline       $followup-millis  ;; optional
   idle-reactivate-time          $idle-time-millis ;; optional
   smart-space                   $smart-space-cfg  ;; optional
   smart-space-punctuation (                       ;; optional
@@ -6803,6 +6804,21 @@ This must be the first item following `defzippy`.
 After the first press while zippy is enabled,
 if no chord activates within this configured time,
 zippy is temporarily disabled.
+
+| `$followup-millis`
+| Number of milliseconds.
+The deadline used for followup chords
+(chords reachable only after a preceding chord has activated).
+It starts when the preceding chord's keys are released
+and bounds the window in which the followup must be performed;
+waiting longer than this cancels the pending followup
+(zippy stays enabled and ready for a fresh chord).
+Followups are only matchable in this short post-activation window,
+so they are far less prone to accidental activation during normal typing than
+initial chords;
+this lets you keep a tight `on-first-press-chord-deadline`
+while giving followups — especially multi-key ones — a more forgiving window.
+When unset, it defaults to the value of `on-first-press-chord-deadline`.
 
 | `$idle-time-millis`
 | Number of milliseconds.
