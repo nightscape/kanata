@@ -264,6 +264,17 @@ mod inner {
         /// enable further chord activations.
         pub zch_cfg_ticks_chord_deadline: u16,
 
+        /// Deadline used for *followup* chords — those reachable only after a preceding chord has
+        /// activated (e.g. `dy`->"day" then `dy 1`->"Monday"). It starts when the preceding chord's
+        /// keys are released and bounds the window in which the followup must be performed; waiting
+        /// longer cancels the pending followup (zippy stays enabled and ready for a fresh chord).
+        /// Followups are only matchable in this narrow post-activation window, so they carry far
+        /// less risk of accidental activation during normal typing than initial chords; this lets
+        /// you keep a tight `zch_cfg_ticks_chord_deadline` (few false positives) while giving
+        /// followups — especially multi-key ones — a more forgiving window. When unset it falls
+        /// back to `zch_cfg_ticks_chord_deadline`, preserving prior behaviour.
+        pub zch_cfg_ticks_followup_deadline: u16,
+
         /// User configuration for smart space. See `pub enum ZchSmartSpaceCfg`.
         pub zch_cfg_smart_space: ZchSmartSpaceCfg,
 
@@ -279,6 +290,7 @@ mod inner {
             Self {
                 zch_cfg_ticks_wait_enable: 500,
                 zch_cfg_ticks_chord_deadline: 500,
+                zch_cfg_ticks_followup_deadline: 500,
                 zch_cfg_smart_space: ZchSmartSpaceCfg::Disabled,
                 zch_cfg_suppress_space: ZchSuppressSpaceCfg::Disabled,
                 zch_cfg_smart_space_punctuation: {
@@ -401,6 +413,7 @@ mod inner {
         const KEY_NAME_MAPPINGS: &str = "output-character-mappings";
         const IDLE_REACTIVATE_TIME: &str = "idle-reactivate-time";
         const CHORD_DEADLINE: &str = "on-first-press-chord-deadline";
+        const FOLLOWUP_DEADLINE: &str = "followup-chord-deadline";
         const SMART_SPACE: &str = "smart-space";
         const SMART_SPACE_PUNCTUATION: &str = "smart-space-punctuation";
         const SUPPRESS_SPACE: &str = "suppress-space";
@@ -410,6 +423,7 @@ mod inner {
         let mut idle_reactivate_time_seen = false;
         let mut key_name_mappings_seen = false;
         let mut chord_deadline_seen = false;
+        let mut followup_deadline_seen = false;
         let mut smart_space_seen = false;
         let mut smart_space_punctuation_seen = false;
         let mut suppress_space_seen = false;
@@ -449,6 +463,18 @@ mod inner {
                     chord_deadline_seen = true;
                     config.zch_cfg_ticks_chord_deadline =
                         parse_u16(config_value, s, CHORD_DEADLINE)?;
+                }
+
+                FOLLOWUP_DEADLINE => {
+                    if followup_deadline_seen {
+                        bail_expr!(
+                            config_name,
+                            "This is the 2nd instance; it can only be defined once"
+                        );
+                    }
+                    followup_deadline_seen = true;
+                    config.zch_cfg_ticks_followup_deadline =
+                        parse_u16(config_value, s, FOLLOWUP_DEADLINE)?;
                 }
 
                 SMART_SPACE => {
@@ -639,6 +665,12 @@ mod inner {
         let rem = pairs.1;
         if !rem.is_empty() {
             bail_expr!(&rem[0], "zippy config name is missing its value");
+        }
+
+        // When unset, the followup deadline mirrors the initial chord deadline. Done after the loop
+        // so it is independent of the order the two options appear in the config.
+        if !followup_deadline_seen {
+            config.zch_cfg_ticks_followup_deadline = config.zch_cfg_ticks_chord_deadline;
         }
 
         if config.zch_cfg_suppress_space != ZchSuppressSpaceCfg::Disabled

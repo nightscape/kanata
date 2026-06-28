@@ -57,11 +57,7 @@ fn sim_zippychord_followup_with_prev() {
     )
     .to_ascii();
     assert_eq!(
-        "dn:D t:10ms dn:BSpace up:BSpace \
-         up:D dn:D dn:A up:A up:Y dn:Y \
-         t:10ms up:D t:1ms up:Y t:9ms \
-         dn:BSpace up:BSpace dn:BSpace up:BSpace dn:BSpace up:BSpace \
-         dn:LShift dn:M up:M up:LShift dn:O up:O dn:N up:N dn:D up:D dn:A up:A dn:Y up:Y",
+        "dn:D t:10ms dn:A up:A up:Y dn:Y t:10ms up:D t:1ms up:Y t:9ms dn:BSpace up:BSpace dn:BSpace up:BSpace dn:BSpace up:BSpace dn:LShift dn:M up:M up:LShift dn:O up:O dn:N up:N dn:D up:D dn:A up:A dn:Y up:Y",
         result
     );
 }
@@ -285,9 +281,7 @@ fn sim_zippychord_caps_word() {
     )
     .to_ascii();
     assert_eq!(
-        "t:10ms dn:LShift dn:D t:10ms dn:BSpace up:BSpace up:D dn:D dn:A up:A up:Y dn:Y \
-         t:10ms up:D t:1ms up:LShift up:Y t:9ms dn:Space t:1ms up:Space \
-         t:1999ms dn:D t:1ms dn:BSpace up:BSpace up:D dn:D dn:A up:A up:Y dn:Y",
+        "t:10ms dn:LShift dn:D t:10ms dn:BSpace up:BSpace up:D dn:D dn:A up:A up:Y dn:Y t:10ms up:D t:1ms up:LShift up:Y t:9ms dn:Space t:1ms up:Space t:1999ms dn:D t:1ms dn:A up:A up:Y dn:Y",
         result
     );
     let result = simulate_with_zippy_file_content(
@@ -345,11 +339,7 @@ fn sim_zippychord_prefix() {
     )
     .to_ascii();
     assert_eq!(
-        "dn:P t:1ms dn:BSpace up:BSpace up:P dn:P up:R dn:R dn:E up:E dn:Space up:Space \
-         dn:BSpace up:BSpace t:1ms up:P t:1ms up:R t:7ms \
-         dn:BSpace up:BSpace dn:BSpace up:BSpace \
-         dn:U up:U dn:L up:L dn:L up:L dn:Space up:Space \
-         dn:R up:R dn:E up:E up:Q dn:Q dn:U up:U dn:E up:E dn:S up:S dn:T up:T t:1ms up:Q",
+        "dn:P t:1ms up:R dn:R dn:E up:E dn:Space up:Space dn:BSpace up:BSpace t:1ms up:P t:1ms up:R t:7ms dn:BSpace up:BSpace dn:BSpace up:BSpace dn:U up:U dn:L up:L dn:L up:L dn:Space up:Space dn:R up:R dn:E up:E up:Q dn:Q dn:U up:U dn:E up:E dn:S up:S dn:T up:T t:1ms up:Q",
         result
     );
     let result = simulate_with_zippy_file_content(
@@ -361,9 +351,7 @@ fn sim_zippychord_prefix() {
     .no_time()
     .no_releases();
     assert_eq!(
-        "dn:P dn:BSpace \
-         dn:P dn:R dn:E dn:Space dn:BSpace \
-         dn:BSpace dn:BSpace dn:A dn:R dn:T dn:N dn:E dn:R",
+        "dn:P dn:R dn:E dn:Space dn:BSpace dn:BSpace dn:BSpace dn:A dn:R dn:T dn:N dn:E dn:R",
         result
     );
 }
@@ -378,8 +366,7 @@ fn sim_zippychord_smartspace_full() {
     )
     .to_ascii();
     assert_eq!(
-        "dn:D t:1ms dn:BSpace up:BSpace up:D dn:D dn:A up:A up:Y dn:Y dn:Space up:Space \
-         t:9ms up:D t:1ms up:Y t:99ms dn:BSpace up:BSpace dn:Dot t:10ms up:Dot",
+        "dn:D t:1ms dn:A up:A up:Y dn:Y dn:Space up:Space t:9ms up:D t:1ms up:Y t:99ms dn:BSpace up:BSpace dn:Dot t:10ms up:Dot",
         result
     );
 
@@ -392,9 +379,7 @@ fn sim_zippychord_smartspace_full() {
     )
     .to_ascii();
     assert_eq!(
-        "dn:P t:1ms dn:BSpace up:BSpace up:P dn:P up:R dn:R dn:E up:E \
-         dn:Space up:Space dn:BSpace up:BSpace \
-         t:9ms up:P t:1ms up:R t:99ms dn:Dot t:10ms up:Dot",
+        "dn:P t:1ms up:R dn:R dn:E up:E dn:Space up:Space dn:BSpace up:BSpace t:9ms up:P t:1ms up:R t:99ms dn:Dot t:10ms up:Dot",
         result
     );
 }
@@ -409,8 +394,7 @@ fn sim_zippychord_smartspace_spaceonly() {
     )
     .to_ascii();
     assert_eq!(
-        "dn:D t:1ms dn:BSpace up:BSpace up:D dn:D dn:A up:A up:Y dn:Y dn:Space up:Space \
-         t:9ms up:D t:1ms up:Y t:99ms dn:Dot t:10ms up:Dot",
+        "dn:D t:1ms dn:A up:A up:Y dn:Y dn:Space up:Space t:9ms up:D t:1ms up:Y t:99ms dn:Dot t:10ms up:Dot",
         result
     );
 
@@ -423,9 +407,7 @@ fn sim_zippychord_smartspace_spaceonly() {
     )
     .to_ascii();
     assert_eq!(
-        "dn:P t:1ms dn:BSpace up:BSpace up:P dn:P up:R dn:R dn:E up:E \
-         dn:Space up:Space dn:BSpace up:BSpace \
-         t:9ms up:P t:1ms up:R t:99ms dn:Dot t:10ms up:Dot",
+        "dn:P t:1ms up:R dn:R dn:E up:E dn:Space up:Space dn:BSpace up:BSpace t:9ms up:P t:1ms up:R t:99ms dn:Dot t:10ms up:Dot",
         result
     );
 }
@@ -440,8 +422,7 @@ fn sim_zippychord_smartspace_none() {
     )
     .to_ascii();
     assert_eq!(
-        "dn:D t:1ms dn:BSpace up:BSpace up:D dn:D dn:A up:A up:Y dn:Y \
-         t:9ms up:D t:1ms up:Y t:99ms dn:Dot t:10ms up:Dot",
+        "dn:D t:1ms dn:A up:A up:Y dn:Y t:9ms up:D t:1ms up:Y t:99ms dn:Dot t:10ms up:Dot",
         result
     );
 
@@ -454,9 +435,7 @@ fn sim_zippychord_smartspace_none() {
     )
     .to_ascii();
     assert_eq!(
-        "dn:P t:1ms dn:BSpace up:BSpace up:P dn:P up:R dn:R dn:E up:E \
-         dn:Space up:Space dn:BSpace up:BSpace \
-         t:9ms up:P t:1ms up:R t:99ms dn:Dot t:10ms up:Dot",
+        "dn:P t:1ms up:R dn:R dn:E up:E dn:Space up:Space dn:BSpace up:BSpace t:9ms up:P t:1ms up:R t:99ms dn:Dot t:10ms up:Dot",
         result
     );
 }
@@ -504,11 +483,7 @@ fn sim_zippychord_smartspace_followup() {
     )
     .to_ascii();
     assert_eq!(
-        "dn:D t:10ms dn:BSpace up:BSpace \
-         up:D dn:D dn:A up:A up:Y dn:Y dn:Space up:Space \
-         t:10ms up:D t:1ms up:Y t:9ms \
-         dn:BSpace up:BSpace dn:BSpace up:BSpace dn:BSpace up:BSpace dn:BSpace up:BSpace \
-         dn:LShift dn:M up:M up:LShift dn:O up:O dn:N up:N dn:D up:D dn:A up:A dn:Y up:Y dn:Space up:Space",
+        "dn:D t:10ms dn:A up:A up:Y dn:Y dn:Space up:Space t:10ms up:D t:1ms up:Y t:9ms dn:BSpace up:BSpace dn:BSpace up:BSpace dn:BSpace up:BSpace dn:BSpace up:BSpace dn:LShift dn:M up:M up:LShift dn:O up:O dn:N up:N dn:D up:D dn:A up:A dn:Y up:Y dn:Space up:Space",
         result
     );
 }
@@ -534,11 +509,7 @@ fn sim_zippychord_smartspace_custom_punc() {
     )
     .to_ascii();
     assert_eq!(
-        "dn:D t:10ms dn:BSpace up:BSpace \
-         up:D dn:D dn:A up:A up:Y dn:Y dn:Space up:Space \
-         t:10ms up:D t:1ms up:Y t:9ms \
-         dn:BSpace up:BSpace dn:BSpace up:BSpace dn:BSpace up:BSpace dn:BSpace up:BSpace \
-         dn:LShift dn:M up:M up:LShift dn:O up:O dn:N up:N dn:D up:D dn:A up:A dn:Y up:Y dn:Space up:Space",
+        "dn:D t:10ms dn:A up:A up:Y dn:Y dn:Space up:Space t:10ms up:D t:1ms up:Y t:9ms dn:BSpace up:BSpace dn:BSpace up:BSpace dn:BSpace up:BSpace dn:BSpace up:BSpace dn:LShift dn:M up:M up:LShift dn:O up:O dn:N up:N dn:D up:D dn:A up:A dn:Y up:Y dn:Space up:Space",
         result
     );
 
@@ -628,10 +599,7 @@ fn sim_zippychord_non_followup_subsequent_with_potential_followups_available() {
     )
     .to_ascii();
     assert_eq!(
-        "dn:G t:1ms dn:BSpace up:BSpace up:G dn:G dn:I up:I dn:T up:T dn:Space up:Space t:9ms \
-         up:G t:1ms up:Dot t:999ms \
-         dn:G t:1ms dn:BSpace up:BSpace up:G dn:G dn:I up:I dn:T up:T dn:Space up:Space t:9ms \
-         up:G t:1ms up:Dot",
+        "dn:G t:1ms dn:I up:I dn:T up:T dn:Space up:Space t:9ms up:G t:1ms up:Dot t:999ms dn:G t:1ms dn:I up:I dn:T up:T dn:Space up:Space t:9ms up:G t:1ms up:Dot",
         result
     );
 }
@@ -1050,8 +1018,10 @@ fn sim_zippychord_multikey_followup() {
     // Regression: a followup component with more than one key (`xy ab`) must
     // activate. Previously the first key's partial (subset) match against the
     // pending followup was discarded in favor of a `Neither` main-chord lookup,
-    // soft-resetting the followup so it never completed.
-    let cfg = "(defsrc lalt)(deflayer base lalt)(defzippy file on-first-press-chord-deadline 50 idle-reactivate-time 500 smart-space none)";
+    // soft-resetting the followup so it never completed. The generous
+    // followup-chord-deadline keeps the followup live across the settle so this test
+    // isolates the activation behaviour (the deadline itself is covered separately).
+    let cfg = "(defsrc lalt)(deflayer base lalt)(defzippy file on-first-press-chord-deadline 50 followup-chord-deadline 500 idle-reactivate-time 500 smart-space none)";
     let content = "
 xy	foo
 xy ab	BAR
@@ -1073,4 +1043,95 @@ xy ab	BAR
     );
 }
 
+// Input that exercises a *slow* multi-key followup: root `xy` pressed fast (within
+// the tight 50ms initial deadline), released, then followup `ab` pressed with a
+// 100ms gap between its two keys — far longer than the 50ms initial deadline.
+const SLOW_FOLLOWUP_INPUT: &str = "d:x d:y t:1 u:x u:y t:300 d:a t:100 d:b t:1 u:a u:b t:300";
+const SLOW_FOLLOWUP_TSV: &str = "
+xy	foo
+xy ab	BAR
+";
 
+#[test]
+fn sim_zippychord_followup_deadline_allows_slow_followup() {
+    // With a separate, longer `followup-chord-deadline`, the followup completes
+    // even though the gap between its keys exceeds the tight initial deadline.
+    let cfg = "(defsrc lalt)(deflayer base lalt)(defzippy file \
+               on-first-press-chord-deadline 50 followup-chord-deadline 500 smart-space none)";
+    let result =
+        simulate_with_zippy_file_content(cfg, SLOW_FOLLOWUP_INPUT, SLOW_FOLLOWUP_TSV).to_ascii();
+    assert_eq!("BAR", overlap_net_text(&result));
+}
+
+#[test]
+fn sim_zippychord_followup_deadline_defaults_to_chord_deadline() {
+    // Without `followup-chord-deadline` it falls back to the 50ms initial deadline,
+    // so the followup window (which starts when the root keys are released) expires
+    // during the gap before the followup completes: zippy disables and the keys pass
+    // through (net "fooab", no expansion). Pins the fallback AND shows the option is
+    // non-vacuous.
+    let cfg = "(defsrc lalt)(deflayer base lalt)(defzippy file \
+               on-first-press-chord-deadline 50 smart-space none)";
+    let result =
+        simulate_with_zippy_file_content(cfg, SLOW_FOLLOWUP_INPUT, SLOW_FOLLOWUP_TSV).to_ascii();
+    assert_eq!("fooab", overlap_net_text(&result));
+}
+
+// A single-key followup `xy z`->"BAR" after a root `xy`->"foo", to exercise the
+// *idle gap* between the word and the followup (the user-reported case: typing
+// `do` then `s` seconds later still produced `does`).
+const IDLE_FOLLOWUP_TSV: &str = "
+xy	foo
+xy z	BAR
+";
+
+#[test]
+fn sim_zippychord_followup_fires_within_idle_deadline() {
+    // Followup pressed 200ms after the root — within the 500ms followup deadline —
+    // so it still activates.
+    let cfg = "(defsrc lalt)(deflayer base lalt)(defzippy file \
+               on-first-press-chord-deadline 50 followup-chord-deadline 500 smart-space none)";
+    let input = "d:x d:y t:1 u:x u:y t:200 d:z t:1 u:z t:1";
+    let result = simulate_with_zippy_file_content(cfg, input, IDLE_FOLLOWUP_TSV).to_ascii();
+    assert_eq!("BAR", overlap_net_text(&result));
+}
+
+#[test]
+fn sim_zippychord_followup_expires_past_idle_deadline() {
+    // Followup pressed 600ms after the root — past the 500ms followup deadline — so
+    // the pending followup is cancelled and the key passes through (net "fooz", not
+    // "BAR"). This is the fix for the followup persisting indefinitely across an idle.
+    let cfg = "(defsrc lalt)(deflayer base lalt)(defzippy file \
+               on-first-press-chord-deadline 50 followup-chord-deadline 500 smart-space none)";
+    let input = "d:x d:y t:1 u:x u:y t:600 d:z t:1 u:z t:1";
+    let result = simulate_with_zippy_file_content(cfg, input, IDLE_FOLLOWUP_TSV).to_ascii();
+    assert_eq!("fooz", overlap_net_text(&result));
+}
+
+
+
+
+#[test]
+fn sim_zippychord_redundant_echo_delete() {
+    // OPEN efficiency bug discovered by the event-stream observable (#1); see
+    // ZIPPY_PBT_NOTES.md. A chord whose output extends its own echoed input keys
+    // should PRESERVE that prefix and only append the new suffix — emitting NO
+    // backspace. `ab`->"abc": after echoing the typed key(s), completing the chord
+    // should just append, not backspace the echoed "a" and retype "abc". Today
+    // zippychord backspaces the echoed prefix and retypes it: the net text is the
+    // correct "abc", but the redundant delete corrupts the result when it is dropped
+    // under load / on a laggy remote (the user-observed failure). The common-prefix
+    // optimization in zippychord.rs already preserves prefixes *between expansions*;
+    // the fix is to extend it to the echoed input keys. Asserts the intended
+    // (efficient) behaviour and currently FAILS.
+    let tsv = "ab\tabc\n";
+    let cfg = "(defsrc lalt)(deflayer base lalt)(defzippy file \
+               on-first-press-chord-deadline 200 smart-space none)";
+    let result =
+        simulate_with_zippy_file_content(cfg, "d:a t:5 d:b t:5 u:a u:b t:50", tsv).to_ascii();
+    assert!(
+        !result.contains("BSpace"),
+        "zippychord redundantly backspaced the echoed prefix instead of preserving \
+         it; output: {result}"
+    );
+}

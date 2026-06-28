@@ -77,6 +77,14 @@ struct ZchDynamicState {
     zchd_characters_to_delete_on_next_activation: i16,
     /// Tracks past activation for additional computation.
     zchd_prior_activation: Option<Arc<ZchChordOutput>>,
+    /// The characters eagerly typed-through to form the *current* (not-yet-activated)
+    /// chord, in press order — i.e. what is on screen before the first activation of a
+    /// hold. Used to reuse the common prefix between these echoed input keys and the
+    /// activation output, so a chord whose output extends its own typed keys (e.g.
+    /// `ab` -> "abc") does not backspace and retype that shared prefix. Subsequent
+    /// (overlapping) activations in the same hold reuse `zchd_prior_activation`
+    /// instead; this is consumed and cleared at the first activation.
+    zchd_typed_input: Vec<ZchOutput>,
     /// Tracker for time until prior state change to know if potential stale data should be
     /// cleared. This is a contingency in case of bugs or weirdness with OS interactions, e.g.
     /// Windows lock screen weirdness.
@@ -148,8 +156,19 @@ impl ZchDynamicState {
                 if !layout_pending && self.zchd_ticks_until_disable > 0 {
                     self.zchd_ticks_until_disable = self.zchd_ticks_until_disable.saturating_sub(1);
                     if self.zchd_ticks_until_disable == 0 {
-                        log::debug!("zippy enable->disable");
-                        self.zchd_soft_reset();
+                        if self.zchd_prioritized_chords.is_some() {
+                            // Followup deadline elapsed: cancel the pending followup but stay
+                            // enabled and ready for a fresh chord (a deliberate activation already
+                            // happened — this is the same readiness as after any activation, not the
+                            // "disable to avoid accidental chords during normal typing" case).
+                            log::debug!("zippy followup deadline elapsed->clear followup");
+                            self.zchd_clear_history();
+                        } else {
+                            // Initial deadline elapsed with no chord: disable to avoid accidental
+                            // activations during ordinary typing.
+                            log::debug!("zippy enable->disable");
+                            self.zchd_soft_reset();
+                        }
                     }
                 }
             }
@@ -211,12 +230,18 @@ impl ZchDynamicState {
         self.zchd_prioritized_chords = None;
         self.zchd_prior_activation = None;
         self.zchd_prior_activation_output_count = 0;
+        self.zchd_typed_input.clear();
     }
 
     /// Returns true if dynamic zch state is such that idling optimization can activate.
     fn zchd_is_idle(&self) -> bool {
+        // A live disable deadline (`ticks_until_disable > 0`) must keep ticking so it can expire —
+        // e.g. a pending followup that should be cancelled once the followup deadline elapses. If
+        // this reported idle, the idle optimization would freeze the countdown and the followup
+        // would persist indefinitely across a pause.
         let is_idle = self.zchd_enabled_state == ZchEnabledState::Enabled
-            && self.zchd_input_keys.zchik_is_empty();
+            && self.zchd_input_keys.zchik_is_empty()
+            && self.zchd_ticks_until_disable == 0;
         log::trace!("zch is idle: {is_idle}");
         is_idle
     }
@@ -228,7 +253,7 @@ impl ZchDynamicState {
         self.zchd_input_keys.zchik_insert(osc);
     }
 
-    fn zchd_release_key(&mut self, osc: OsCode) {
+    fn zchd_release_key(&mut self, osc: OsCode, followup_deadline_ticks: u16) {
         self.zchd_input_keys.zchik_remove(osc);
         match (self.zchd_last_press, self.zchd_input_keys.zchik_is_empty()) {
             (ZchLastPressClassification::NotChord, true) => {
@@ -242,14 +267,20 @@ impl ZchDynamicState {
             }
             (ZchLastPressClassification::IsChord, true) => {
                 log::debug!("all released->zippy enabled");
+                self.zchd_characters_to_delete_on_next_activation = 0;
+                self.zchd_typed_input.clear();
+                self.zchd_enabled_state = ZchEnabledState::Enabled;
+                self.zchd_same_hold_activation_count = 0;
                 if self.zchd_prioritized_chords.is_none() {
                     log::debug!("no continuation->zippy clear key erase state");
                     self.zchd_clear_history();
+                    self.zchd_ticks_until_disable = 0;
+                } else {
+                    // A followup is pending. Keep the deadline running across the idle gap so that
+                    // waiting longer than the followup deadline cancels the pending followup;
+                    // otherwise it would persist until the next keypress and fire seconds later.
+                    self.zchd_ticks_until_disable = followup_deadline_ticks;
                 }
-                self.zchd_characters_to_delete_on_next_activation = 0;
-                self.zchd_ticks_until_disable = 0;
-                self.zchd_enabled_state = ZchEnabledState::Enabled;
-                self.zchd_same_hold_activation_count = 0;
             }
             (ZchLastPressClassification::IsChord, false) => {
                 log::debug!("some released->zippy enabled");
@@ -340,9 +371,14 @@ impl ZchState {
         }
 
         // Zippychording is enabled. Ensure the deadline to disable it if no chord activates is
-        // active.
-        self.zchd
-            .zchd_activate_chord_deadline(self.zch_cfg.zch_cfg_ticks_chord_deadline);
+        // active. A pending followup (a chord already activated and is awaiting its continuation)
+        // uses the more forgiving followup deadline; otherwise this is a fresh initial chord.
+        let press_deadline = if self.zchd.zchd_prioritized_chords.is_some() {
+            self.zch_cfg.zch_cfg_ticks_followup_deadline
+        } else {
+            self.zch_cfg.zch_cfg_ticks_chord_deadline
+        };
+        self.zchd.zchd_activate_chord_deadline(press_deadline);
         self.zchd.zchd_state_change(&self.zch_cfg);
         self.zchd.zchd_press_key(osc);
 
@@ -380,44 +416,40 @@ impl ZchState {
 
         match activation {
             HasValue(a) => {
-                // Find the longest common prefix length between the prior activation and the new
-                // activation. This value affects both:
+                // Find the longest common prefix length between what is already on
+                // screen and the new activation output. This value affects both:
                 // - the number of backspaces that need to be done
                 // - the number of characters that actually need to be typed by the activation
+                // For the FIRST activation of a hold what is on screen is the echoed
+                // input keys; for subsequent (overlapping) activations it is the prior
+                // activation's output. Reusing the prefix in both cases avoids
+                // backspacing and retyping characters that are already correct.
                 let common_prefix_len_from_past_activation = if !is_prioritized_activation
                     && self.zchd.zchd_same_hold_activation_count == 0
                 {
-                    0
+                    common_output_prefix_len(&self.zchd.zchd_typed_input, &a.zch_output)
                 } else {
                     self.zchd
                         .zchd_prior_activation
                         .as_ref()
                         .map(|prior_activation| {
-                            let current_activation_output = &a.zch_output;
-                            let mut len: i16 = 0;
-                            for (past, current) in prior_activation
-                                .zch_output
-                                .iter()
-                                .copied()
-                                .zip(current_activation_output.iter().copied())
-                            {
-                                if past.osc() == OsCode::KEY_BACKSPACE
-                                    || current.osc() == OsCode::KEY_BACKSPACE
-                                    || past != current
-                                {
-                                    break;
-                                }
-                                len += 1;
-                            }
-                            len
+                            common_output_prefix_len(&prior_activation.zch_output, &a.zch_output)
                         })
                         .unwrap_or(0)
                 };
                 self.zchd.zchd_prior_activation = Some(a.clone());
                 self.zchd.zchd_same_hold_activation_count += 1;
 
-                self.zchd
-                    .zchd_restart_deadline(self.zch_cfg.zch_cfg_ticks_chord_deadline);
+                // After an activation the window is held open only to catch a followup, so when this
+                // chord has followups use the followup deadline. (This is the held-continuation path
+                // where keys are not released between chords; the release-then-press path re-arms via
+                // `zchd_activate_chord_deadline` above.)
+                let restart_deadline = if a.zch_followups.is_some() {
+                    self.zch_cfg.zch_cfg_ticks_followup_deadline
+                } else {
+                    self.zch_cfg.zch_cfg_ticks_chord_deadline
+                };
+                self.zchd.zchd_restart_deadline(restart_deadline);
                 if !a.zch_output.is_empty() {
                     // Zippychording eagerly types characters that form a chord and also eagerly
                     // outputs chords that are of a maybe-to-be-activated-later chord with more
@@ -623,6 +655,19 @@ impl ZchState {
             IsSubset => {
                 self.zchd.zchd_last_press = ZchLastPressClassification::NotChord;
                 self.zchd.zchd_characters_to_delete_on_next_activation += 1;
+                // Record the echoed-through key (with its current casing/AltGr) so the
+                // next activation can reuse any common prefix it shares with the chord
+                // output instead of backspacing and retyping it.
+                let echoed = match (
+                    self.zchd.zchd_is_lsft_active | self.zchd.zchd_is_rsft_active,
+                    self.zchd.zchd_is_altgr_active,
+                ) {
+                    (false, false) => ZchOutput::Lowercase(osc),
+                    (true, false) => ZchOutput::Uppercase(osc),
+                    (false, true) => ZchOutput::AltGr(osc),
+                    (true, true) => ZchOutput::ShiftAltGr(osc),
+                };
+                self.zchd.zchd_typed_input.push(echoed);
                 kb.press_key(osc)
             }
 
@@ -664,7 +709,8 @@ impl ZchState {
             return kb.release_key(osc);
         }
         self.zchd.zchd_state_change(&self.zch_cfg);
-        self.zchd.zchd_release_key(osc);
+        self.zchd
+            .zchd_release_key(osc, self.zch_cfg.zch_cfg_ticks_followup_deadline);
         kb.release_key(osc)
     }
 
@@ -678,6 +724,26 @@ impl ZchState {
     pub(crate) fn zch_is_idle(&self) -> bool {
         self.zchd.zchd_is_idle()
     }
+}
+
+/// Longest common prefix length (in output entries) between what is currently on
+/// screen (`on_screen`) and a new activation's output. A backspace entry on either
+/// side stops the run: backspaced characters are not safe to treat as reusable
+/// prefix. Used to avoid backspacing and retyping characters that are already correct
+/// — both the echoed input keys (first activation) and a prior activation's output
+/// (overlapping activations).
+fn common_output_prefix_len(on_screen: &[ZchOutput], output: &[ZchOutput]) -> i16 {
+    let mut len: i16 = 0;
+    for (past, current) in on_screen.iter().copied().zip(output.iter().copied()) {
+        if past.osc() == OsCode::KEY_BACKSPACE
+            || current.osc() == OsCode::KEY_BACKSPACE
+            || past != current
+        {
+            break;
+        }
+        len += 1;
+    }
+    len
 }
 
 fn type_osc(osc: OsCode, kb: &mut KbdOut, zchd: &ZchDynamicState) -> Result<(), std::io::Error> {

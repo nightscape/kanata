@@ -52,15 +52,28 @@ const INPUT_ALPHA: &[char] = &['a', 'b', 'c', 'd'];
 // Letters used for literal (non-chord) typing — disjoint from INPUT_ALPHA so a
 // literal press is always "Neither" (disables zippy), never a chord subset.
 const NONCHORD_ALPHA: &[char] = &['u', 'v', 'w', 'x', 'y', 'z'];
+// Punctuation chars in zippychord's default smart-space-punctuation set that the SM
+// generates as literals (to exercise smart-space `full` auto-erase). Only `.` for now
+// — the one whose output key-name (`Dot`) `key_to_char`/`net_text` decode; `,`/`;`
+// are deferred pending their output-name decode. Disjoint from chord (a–d), free, and
+// tap-hold (u–z) alphabets, so they cannot form a chord or be a tap-hold input.
+const SMART_SPACE_PUNCT: &[char] = &['.'];
+
+fn is_smart_space_punct(c: char) -> bool {
+    SMART_SPACE_PUNCT.contains(&c)
+}
 // Alphabet for free typing. Intentionally INCLUDES chord-participating keys
 // (a-d) and space so that free typing can incidentally trigger chord
 // activations — which the naive "literal append" oracle mispredicts. The PBT is
 // meant to discover that; see ZIPPY_PBT_NOTES.md.
 const FREE_ALPHA: &[char] = &['a', 'b', 'c', 'd', ' ', 'u', 'v', 'w'];
 
-// Fixed timers. idle-reactivate-time (wait) is large so the WaitEnable countdown
-// only ever crosses on an explicit "full" Idle transition, never mid-hold (holds
-// reset it to `wait` on release anyway). Deadline is irrelevant to these flows.
+// Timer DEFAULTS. The SM now *generates* the timers per config (see `arb_cfg`); these
+// constants are the deserialization defaults for older seeds and the fixed values the
+// deterministic reference-test helper uses. `wait` (idle-reactivate-time) is large so
+// the WaitEnable countdown only crosses on an explicit "full" Idle, never mid-hold;
+// the initial vs followup chord deadlines are generated independently so their
+// divergence is exercised rather than assumed equal.
 const WAIT: u16 = 500;
 const DEADLINE: u16 = 50;
 // Max per-event timing gaps for a ChordExpansion gesture. The largest chord is
@@ -127,12 +140,35 @@ enum SuppressSpace {
     NotFirstDefKey,
 }
 
+// Defaults for the generated timers — chosen so older persisted seeds (which lack
+// these fields) deserialize to the previously-fixed behaviour.
+fn default_chord_deadline() -> u16 {
+    DEADLINE
+}
+fn default_followup_deadline() -> u16 {
+    DEADLINE
+}
+fn default_wait() -> u16 {
+    WAIT
+}
+
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 struct ModelCfg {
     smart_space: SmartSpace,
     // `default` so older persisted seeds (no suppress_space) still deserialize.
     #[serde(default)]
     suppress_space: SuppressSpace,
+    // Generated timers (dimension lift: stop forcing the timers equal/fixed). The
+    // initial and followup chord deadlines are generated *independently* so the
+    // deadline arithmetic — and the followup-vs-initial divergence — is exercised
+    // rather than assumed. `idle-reactivate-time` (wait) is generated too, kept
+    // above the tap-hold settle (250ms) so a tap can't re-enable zippy mid-gesture.
+    #[serde(default = "default_chord_deadline")]
+    chord_deadline: u16,
+    #[serde(default = "default_followup_deadline")]
+    followup_deadline: u16,
+    #[serde(default = "default_wait")]
+    wait: u16,
 }
 
 // ---------------------------------------------------------------------------
@@ -161,6 +197,14 @@ pub struct KanataModel {
     prioritized: Option<Vec<Child>>,
     last_act_len: usize, // visible chars the last activation owns at the tail
     smart_space_sent: bool,
+    // Followup-deadline budget (dimension 12). `Some(ticks)` exactly when a
+    // followup is pending: armed to the followup deadline (= DEADLINE, since the SM
+    // never sets `followup-chord-deadline`) when `prioritized` becomes `Some`, and
+    // counted down by `Idle`. On reaching 0 the followup is cancelled but zippy
+    // stays Enabled — the cleared-but-enabled state. `default` so older persisted
+    // seeds still deserialize. Kept in lockstep with `prioritized.is_some()`.
+    #[serde(default)]
+    followup_until_clear: Option<u16>,
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -264,7 +308,9 @@ impl KanataModel {
         }
         format!(
             "(defsrc {src})(deflayer base {lay})(defzippy file \
-             on-first-press-chord-deadline {DEADLINE} idle-reactivate-time {WAIT} smart-space {ss}{suppress})"
+             on-first-press-chord-deadline {} followup-chord-deadline {} \
+             idle-reactivate-time {} smart-space {ss}{suppress})",
+            self.cfg.chord_deadline, self.cfg.followup_deadline, self.cfg.wait
         )
     }
 
@@ -457,11 +503,24 @@ impl KanataModel {
     /// post-typing disabled window. Shared by `Literal` and the tap-hold gestures
     /// (whose resolved output reaches zippy as an ordinary keystroke).
     fn type_literal(&mut self, c: char) {
+        // Smart-space `full` auto-erase: a configured punctuation char typed right
+        // after a full-mode activation's trailing space erases that space first
+        // ("word ." -> "word."). Mirrors `zippychord.rs` (the `Sent` state + the
+        // punctuation set). Only the trailing auto-space is removed; smart_space is
+        // then inactive regardless.
+        if self.cfg.smart_space == SmartSpace::Full
+            && self.smart_space_sent
+            && is_smart_space_punct(c)
+            && matches!(self.visible.last(), Some(' '))
+        {
+            self.visible.pop();
+        }
         self.smart_space_sent = false;
         self.visible.push(c);
         self.enabled = Enabled::WaitEnable;
-        self.until_enabled = WAIT;
+        self.until_enabled = self.cfg.wait;
         self.prioritized = None;
+        self.followup_until_clear = None;
         self.last_act_len = 0;
     }
 
@@ -479,6 +538,12 @@ impl KanataModel {
         }
         self.apply_out(out);
         let mut lal = display_len(out).max(0) as usize;
+        // Recompute the smart-space `Sent` state from THIS activation only: the SUT
+        // clears it on the activation's keystrokes and re-sets it iff this activation
+        // adds a trailing space in `full` mode. Resetting here (not just in the
+        // add-branch) prevents a prior `Sent` from going stale across a suppressed /
+        // no-space activation and mispredicting a later punctuation auto-erase.
+        self.smart_space_sent = false;
         // Smart space: add a trailing space unless output is empty or ends in
         // space/backspace — or `suppress-space` suppresses it for this press
         // order. A suppressed trailing space is identical to smart-space being
@@ -500,6 +565,12 @@ impl KanataModel {
         } else {
             Some(followups)
         };
+        // Arm the followup-deadline budget exactly when a followup becomes pending
+        // (dimension 12). The impl arms `ticks_until_disable = followup_deadline` on
+        // the chord's final key release; the model applies the gesture atomically, so
+        // the equivalent arm point is here, where `prioritized` is set.
+        let fd = self.cfg.followup_deadline;
+        self.followup_until_clear = self.prioritized.as_ref().map(|_| fd);
     }
 }
 
@@ -525,6 +596,7 @@ impl ReferenceStateMachine for KanataRef {
                 prioritized: None,
                 last_act_len: 0,
                 smart_space_sent: false,
+                followup_until_clear: None,
             })
             .prop_filter("must parse", |m| {
                 // `Kanata::new_from_str` configures the process-global zippychord
@@ -606,13 +678,24 @@ impl ReferenceStateMachine for KanataRef {
         let th_inputs: BTreeSet<char> = state.taphold.iter().map(|k| k.input).collect();
         let literal_alpha: Vec<char> = NONCHORD_ALPHA
             .iter()
+            .chain(SMART_SPACE_PUNCT.iter())
             .copied()
             .filter(|c| !th_inputs.contains(c))
             .collect();
         let literal = proptest::sample::select(literal_alpha)
             .prop_map(|key| KanataTransition::Literal { key });
         let idle_tiny = (1u16..=3).prop_map(|ms| KanataTransition::Idle { ms });
-        let idle_full = (WAIT + 20..=WAIT + 60).prop_map(|ms| KanataTransition::Idle { ms });
+        // Generated `wait`: a "full" idle crosses the WaitEnable countdown in one step.
+        let wait = state.cfg.wait;
+        let idle_full = (wait + 20..=wait + 60).prop_map(|ms| KanataTransition::Idle { ms });
+        // Dimension 12: an idle that crosses the followup deadline while a followup is
+        // pending. The range floor (followup_deadline + 10) is above the deadline, and
+        // proptest range strategies shrink toward the *lower* bound, so this can never
+        // shrink below the deadline — it always crosses, cancelling the followup into
+        // the cleared-but-enabled state without ever leaking into the "fresh root
+        // pressed while a followup is still pending" corner (deferred dimension 2).
+        let fd = state.cfg.followup_deadline;
+        let idle_cross = (fd + 10..=fd + 60).prop_map(|ms| KanataTransition::Idle { ms });
         // The PBT discovered that free typing of chord-participating keys
         // incidentally triggers chord activations, which the naive literal oracle
         // mispredicts. So free typing must exclude every key used by any chord;
@@ -650,21 +733,57 @@ impl ReferenceStateMachine for KanataRef {
             prop_oneof![tap, hold].boxed()
         };
 
-        prop_oneof![
-            6 => chord,
-            2 => literal,
-            2 => idle_tiny,
-            1 => idle_full,
-            3 => free,
-            3 => taphold,
-        ]
-        .boxed()
+        // While a followup is pending the followup deadline is counting down (it was
+        // armed when the preceding chord's keys were released). `idle_cross` advances
+        // time past that deadline, which the model predicts exactly: the followup is
+        // cancelled and zippy stays Enabled (the cleared-but-enabled state). The model
+        // then offers fresh roots again, so the gesture after the expiry exercises the
+        // delete-accounting/common-prefix bookkeeping in that region — the same family
+        // the backspace under-count bug lived in. (Sub-deadline idles that keep the
+        // followup pending are NOT generated: the residual-budget-vs-gesture-duration
+        // and layout-pending-freeze interactions are a fidelity risk, and the
+        // within-deadline "still fires" case is already pinned by the deterministic
+        // `sim_zippychord_followup_fires_within_idle_deadline` test. See ZIPPY_PBT_NOTES.md.)
+        if state.prioritized.is_some() {
+            if state.taphold.is_empty() {
+                prop_oneof![6 => chord, 2 => literal, 3 => free, 2 => idle_cross].boxed()
+            } else {
+                prop_oneof![6 => chord, 2 => literal, 3 => free, 3 => taphold, 2 => idle_cross]
+                    .boxed()
+            }
+        } else {
+            prop_oneof![
+                6 => chord,
+                2 => literal,
+                2 => idle_tiny,
+                1 => idle_full,
+                3 => free,
+                3 => taphold,
+            ]
+            .boxed()
+        }
     }
 
     fn apply(mut state: Self::State, transition: &Self::Transition) -> Self::State {
         match transition {
             KanataTransition::Idle { ms } => {
-                if state.enabled == Enabled::WaitEnable {
+                if let Some(budget) = state.followup_until_clear {
+                    // Dimension 12: a followup is pending and its deadline is counting
+                    // down (armed at the preceding chord's release). An idle that
+                    // crosses the deadline cancels the followup but leaves zippy
+                    // Enabled — the cleared-but-enabled state, ready for a fresh root.
+                    // The committed text (and its `last_act_len`) is untouched; a
+                    // subsequent fresh root appends rather than replacing. (The SM
+                    // only generates crossing idles here — see `transitions` — so the
+                    // `else` keep-pending branch is exercised only under shrinking.)
+                    let remaining = budget.saturating_sub(*ms);
+                    if remaining == 0 {
+                        state.prioritized = None;
+                        state.followup_until_clear = None;
+                    } else {
+                        state.followup_until_clear = Some(remaining);
+                    }
+                } else if state.enabled == Enabled::WaitEnable {
                     state.until_enabled = state.until_enabled.saturating_sub(*ms);
                     if state.until_enabled == 0 {
                         state.enabled = Enabled::Enabled;
@@ -712,10 +831,11 @@ impl ReferenceStateMachine for KanataRef {
                         state.visible.push(k);
                     }
                     state.prioritized = None;
+                    state.followup_until_clear = None;
                     state.last_act_len = 0;
                     // Release resets the wait countdown.
                     state.enabled = Enabled::WaitEnable;
-                    state.until_enabled = WAIT;
+                    state.until_enabled = state.cfg.wait;
                 }
             }
             KanataTransition::FreeType { press, .. } => {
@@ -727,8 +847,9 @@ impl ReferenceStateMachine for KanataRef {
                     state.visible.push(k);
                 }
                 state.enabled = Enabled::WaitEnable;
-                state.until_enabled = WAIT;
+                state.until_enabled = state.cfg.wait;
                 state.prioritized = None;
+                state.followup_until_clear = None;
                 state.last_act_len = 0;
             }
         }
@@ -809,7 +930,17 @@ impl ReferenceStateMachine for KanataRef {
             KanataTransition::Literal { key } => {
                 !state.taphold.iter().any(|k| k.input == *key)
             }
-            _ => true,
+            // Dimension 12: while a followup is pending the only idle the model
+            // handles exactly is one that *crosses* the deadline (cancel → cleared-
+            // but-enabled). A sub-deadline idle would leave the followup pending, and
+            // a later root-target transition would then apply while pending — the
+            // unmodeled "fresh root while a followup is pending" corner (dimension 2).
+            // The generator only emits crossing idles here; this guard keeps that true
+            // under shrinking. (`followup_until_clear == DEADLINE` whenever pending.)
+            KanataTransition::Idle { ms } => match state.followup_until_clear {
+                Some(budget) => *ms >= budget,
+                None => true,
+            },
         }
     }
 }
@@ -833,10 +964,23 @@ fn arb_cfg() -> impl Strategy<Value = ModelCfg> {
         } else {
             prop_oneof![Just(SuppressSpace::None), Just(SuppressSpace::NotFirstDefKey)].boxed()
         };
-        suppress.prop_map(move |suppress_space| ModelCfg {
-            smart_space,
-            suppress_space,
-        })
+        // Timers, generated independently within safe bounds:
+        //  - chord_deadline ≥ 50: the proven floor for the ≤30-tick gesture span
+        //    (PRESS_GAP_MAX was sized against 50), so every chord still forms.
+        //  - followup_deadline generated *separately* (and allowed larger) so the
+        //    followup-vs-initial divergence is exercised, not assumed equal.
+        //  - wait > 250: above the tap-hold settle (TH_HOLD_TIMEOUT + 50), so a tap
+        //    cannot re-enable zippy mid-gesture and desync the coarse oracle.
+        let timers = (50u16..=100, 50u16..=150, 300u16..=600);
+        (suppress, timers).prop_map(
+            move |(suppress_space, (chord_deadline, followup_deadline, wait))| ModelCfg {
+                smart_space,
+                suppress_space,
+                chord_deadline,
+                followup_deadline,
+                wait,
+            },
+        )
     })
 }
 
@@ -1044,6 +1188,14 @@ pub(super) fn capset(caps: &[Cap]) -> CapSet {
 pub(super) struct InvCtx<'a> {
     pub events: &'a str,
     pub quiescent: bool,
+    /// Just the output events emitted by the *current* transition (the cumulative
+    /// `events` minus everything before this step). Event-stream invariants that
+    /// reason about a single activation's keystrokes (e.g. eager-undo efficiency)
+    /// use this; whole-stream legality invariants use `events`.
+    pub step_events: &'a str,
+    /// The reconstructed visible text *before* this transition — the buffer the
+    /// `step_events` replay starts from.
+    pub prev_text: &'a str,
 }
 
 /// One catalog invariant, tagged with the component capabilities it requires
@@ -1100,6 +1252,130 @@ fn inv_clean_release(ctx: &InvCtx) -> Result<(), String> {
     }
 }
 
+/// Replay one transition's output events on the prior visible buffer, yielding the
+/// ordered (insert char / delete) operations and the running buffer. Shared by the
+/// text-efficiency/legality invariants. Modifiers set the shift state for casing;
+/// non-printing keys are ignored. Returns the per-position "most recently deleted
+/// value" trace alongside the final redundancy/void findings.
+fn common_prefix_len(a: &[char], b: &[char]) -> usize {
+    a.iter().zip(b.iter()).take_while(|(x, y)| x == y).count()
+}
+
+/// Replay one activation's output ops and measure two things:
+/// - `redundant`: backspaces that deleted *below the common prefix* the impl could
+///   have kept. A backspace-only replacement of old→new must delete down to
+///   `common_prefix_len(old, new)` and no further; reaching a lower floor and
+///   retyping those shared-prefix chars is pure waste. Crucially this is NOT "any
+///   deleted char that reappears" — a char beyond the common prefix (e.g. a
+///   coincidental match at the tail of a fully-different word) MUST be deleted to
+///   reach the divergence, so retyping it is necessary, not redundant.
+/// - `void_deletes`: backspaces on an empty buffer (deleting past the prompt).
+///
+/// "old" for an episode is the buffer at its peak (just before the burst's first
+/// backspace); "new" is the final buffer. `floor` is the lowest length the burst
+/// reached. Redundancy for the episode is `max(0, common_prefix(old,new) - floor)`.
+fn replay_step(prev_text: &str, step_events: &str) -> (usize, usize) {
+    let mut buf: Vec<char> = prev_text.chars().collect();
+    let mut shift = false;
+    let mut void_deletes = 0usize;
+    // Per delete-burst: (peak buffer before the burst, lowest length reached).
+    let mut episodes: Vec<(Vec<char>, usize)> = Vec::new();
+    let mut in_delete = false;
+    let mut peak: Vec<char> = Vec::new();
+    let mut floor = 0usize;
+    for tok in step_events.split_whitespace() {
+        let typed: Option<char> = if let Some(name) = tok.strip_prefix("out:↓") {
+            match name {
+                "LShift" | "RShift" => {
+                    shift = true;
+                    None
+                }
+                "BSpace" => {
+                    if !in_delete {
+                        in_delete = true;
+                        peak = buf.clone();
+                        floor = buf.len();
+                    }
+                    match buf.pop() {
+                        Some(_) => floor = floor.min(buf.len()),
+                        None => void_deletes += 1,
+                    }
+                    None
+                }
+                "Space" => Some(' '),
+                n => key_to_char(n).map(|c| if shift { c.to_ascii_uppercase() } else { c }),
+            }
+        } else if let Some(name) = tok.strip_prefix("out:↑") {
+            if matches!(name, "LShift" | "RShift") {
+                shift = false;
+            }
+            None
+        } else {
+            None
+        };
+        if let Some(ch) = typed {
+            if in_delete {
+                episodes.push((std::mem::take(&mut peak), floor));
+                in_delete = false;
+            }
+            buf.push(ch);
+        }
+    }
+    if in_delete {
+        episodes.push((peak, floor));
+    }
+    let redundant = episodes
+        .iter()
+        .map(|(old, floor)| common_prefix_len(old, &buf).saturating_sub(*floor))
+        .sum();
+    (redundant, void_deletes)
+}
+
+/// Number of backspaces that delete *below the common prefix* the impl could have
+/// preserved across an eager/echo/followup replacement. >0 means wasted deletes
+/// (correct net text, but fragile when deletes drop under load). Exposed for the
+/// `sim_zippychord_redundant_echo_delete` repro and the detector unit tests.
+pub(super) fn redundant_prefix_deletes(prev_text: &str, step_events: &str) -> usize {
+    replay_step(prev_text, step_events).0
+}
+
+/// Efficiency: within a single activation, no backspace deletes below the common
+/// prefix shared between the transiently-shown text (eager expansion or echoed input
+/// keys) and the final text. Deleting a shared-prefix char and retyping it is pure
+/// waste — and the source of corruption when those deletes drop under load / on a
+/// laggy remote. The common-prefix optimization in `zippychord.rs` already preserves
+/// prefixes *between expansions*; this is its teeth, and currently RED for the echoed-
+/// input case (see `sim_zippychord_redundant_echo_delete`). It is a *live* catalog
+/// invariant: to run the correctness-only suite green, disable it via
+/// `KANATA_PBT_DISABLE_INVARIANTS=no_redundant_prefix_delete`. (Distinct from the
+/// rejected `no_release_without_press`: the capitalize idiom re-asserts via `↑X ↓X`,
+/// never via a backspace, so it is not flagged here.)
+fn inv_no_redundant_prefix_delete(ctx: &InvCtx) -> Result<(), String> {
+    let redundant = redundant_prefix_deletes(ctx.prev_text, ctx.step_events);
+    if redundant == 0 {
+        Ok(())
+    } else {
+        Err(format!(
+            "{redundant} char(s) backspaced then retyped identically (common prefix not \
+             preserved across an eager/echo/followup replacement)"
+        ))
+    }
+}
+
+/// Legality: no backspace deletes past the start of the buffer (into the user's
+/// pre-existing text / the prompt). Backspacing into earlier committed words is
+/// legitimate (a followup replaces the prior word); deleting into the void is not.
+fn inv_no_delete_into_void(ctx: &InvCtx) -> Result<(), String> {
+    let (_, void_deletes) = replay_step(ctx.prev_text, ctx.step_events);
+    if void_deletes == 0 {
+        Ok(())
+    } else {
+        Err(format!(
+            "{void_deletes} backspace(s) deleted past the start of the buffer"
+        ))
+    }
+}
+
 /// The single shared catalog. Authored once; every slice runs the selected
 /// subset over the same tick. Add an entry here and it lights up every slice
 /// that has its capabilities — no per-slice duplication.
@@ -1116,13 +1392,56 @@ static INVARIANTS: &[Invariant] = &[
         needs_neg: &[],
         check: inv_clean_release,
     },
+    // OPEN finding: fires on a large fraction of chords (any whose output extends its
+    // echoed input keys). Live so the PBT surfaces *every* instance; disable with
+    // `KANATA_PBT_DISABLE_INVARIANTS=no_redundant_prefix_delete` to run the
+    // correctness-only suite green. See ZIPPY_PBT_NOTES.md.
+    Invariant {
+        id: "no_redundant_prefix_delete",
+        needs_pos: &[Cap::OutputKeyState, Cap::VisibleText],
+        needs_neg: &[],
+        check: inv_no_redundant_prefix_delete,
+    },
+    Invariant {
+        id: "no_delete_into_void",
+        needs_pos: &[Cap::OutputKeyState, Cap::VisibleText],
+        needs_neg: &[],
+        check: inv_no_delete_into_void,
+    },
 ];
 
-/// Run every selected invariant over one transition's outcome; returns the
-/// offending invariant id + message on the first violation.
+/// Invariant ids switched off via `KANATA_PBT_DISABLE_INVARIANTS` (comma-separated).
+/// Lets a run opt out of an invariant without editing the catalog — e.g. disable the
+/// OPEN `no_redundant_prefix_delete` efficiency check to run the correctness-only
+/// suite green: `KANATA_PBT_DISABLE_INVARIANTS=no_redundant_prefix_delete cargo test`.
+fn parse_disabled_list(s: &str) -> BTreeSet<String> {
+    s.split(',')
+        .map(|x| x.trim())
+        .filter(|x| !x.is_empty())
+        .map(|x| x.to_string())
+        .collect()
+}
+
+fn disabled_invariant_ids() -> BTreeSet<String> {
+    std::env::var("KANATA_PBT_DISABLE_INVARIANTS")
+        .ok()
+        .map(|s| parse_disabled_list(&s))
+        .unwrap_or_default()
+}
+
+/// Run every selected, non-disabled invariant over one transition's outcome; returns
+/// the offending invariant id + message on the first violation.
 pub(super) fn run_invariants(present: &CapSet, ctx: &InvCtx) -> Result<(), (&'static str, String)> {
+    run_invariants_filtered(present, ctx, &disabled_invariant_ids())
+}
+
+fn run_invariants_filtered(
+    present: &CapSet,
+    ctx: &InvCtx,
+    disabled: &BTreeSet<String>,
+) -> Result<(), (&'static str, String)> {
     for inv in INVARIANTS {
-        if inv.selected(present) {
+        if inv.selected(present) && !disabled.contains(inv.id) {
             (inv.check)(ctx).map_err(|e| (inv.id, e))?;
         }
     }
@@ -1168,6 +1487,11 @@ pub(super) fn net_text(events: &str) -> String {
 }
 
 fn key_to_char(name: &str) -> Option<char> {
+    // Generated smart-space punctuation (default set is `.`/`,`/`;`; only `.` is
+    // generated, the only one whose output key-name we pin here).
+    if name == "Dot" {
+        return Some('.');
+    }
     let mut chars = name.chars();
     match (chars.next(), chars.next()) {
         (Some(c), None) if c.is_ascii_alphabetic() => Some(c.to_ascii_lowercase()),
@@ -1206,6 +1530,10 @@ impl StateMachineTest for Sut {
         transition: KanataTransition,
     ) -> Self::SystemUnderTest {
         let k = &mut state.kanata;
+        // Output events emitted before this transition — used to slice out just
+        // this step's keystrokes (the per-activation efficiency invariants need the
+        // single-activation delta, not the cumulative stream).
+        let before_len = k.kbd_out.outputs.events.len();
         match &transition {
             KanataTransition::Idle { ms } => {
                 k.tick_ms(*ms as u128, &None).unwrap();
@@ -1254,7 +1582,12 @@ impl StateMachineTest for Sut {
                 }
             }
         }
-        let raw = k.kbd_out.outputs.events.join(" ");
+        let all = &k.kbd_out.outputs.events;
+        let raw = all.join(" ");
+        // This transition's own output delta, and the visible text just before it —
+        // the starting buffer for the per-activation efficiency/legality replay.
+        let step_events = all[before_len..].join(" ");
+        let prev_text = net_text(&all[..before_len].join(" "));
         // Capability-selected catalog invariants (independent of the net-text
         // oracle, which is blind to OS key coalescing). This slice's components:
         // the output stream, the visible-text buffer, the zippy engine, and the
@@ -1272,6 +1605,8 @@ impl StateMachineTest for Sut {
         let ctx = InvCtx {
             events: &raw,
             quiescent,
+            step_events: &step_events,
+            prev_text: &prev_text,
         };
         if let Err((id, e)) = run_invariants(&present, &ctx) {
             panic!(
@@ -1342,6 +1677,9 @@ mod reference_tests {
             cfg: ModelCfg {
                 smart_space,
                 suppress_space,
+                chord_deadline: DEADLINE,
+                followup_deadline: DEADLINE,
+                wait: WAIT,
             },
             roots,
             taphold: vec![],
@@ -1351,6 +1689,7 @@ mod reference_tests {
             prioritized: None,
             last_act_len: 0,
             smart_space_sent: false,
+            followup_until_clear: None,
         }
     }
     fn chord(target: Target, keys: &str) -> KanataTransition {
@@ -1420,6 +1759,66 @@ mod reference_tests {
         assert_eq!("X", vis(&m));
         let m = apply(m, &chord(Target::Followup(0), "b"));
         assert_eq!("Y", vis(&m));
+    }
+
+    #[test]
+    fn ref_followup_deadline_expiry_clears_but_stays_enabled() {
+        // Dimension 12: a root with a pending followup, then an idle that crosses the
+        // followup deadline. The model cancels the followup, keeps the committed text,
+        // and stays Enabled — so a subsequent *fresh* root APPENDS (does not replace).
+        let m = model(
+            SmartSpace::None,
+            vec![
+                root(false, "a", "X", vec![child(false, "b", "Y", vec![])]),
+                root(false, "c", "Z", vec![]),
+            ],
+        );
+        let m = apply(m, &chord(Target::Root(0), "a"));
+        assert_eq!("X", vis(&m));
+        assert!(m.prioritized.is_some());
+        assert_eq!(Some(DEADLINE), m.followup_until_clear);
+
+        // Idle past the deadline: followup cancelled, zippy still Enabled.
+        let m = apply(m, &KanataTransition::Idle { ms: DEADLINE + 10 });
+        assert_eq!("X", vis(&m), "committed text is untouched by expiry");
+        assert!(m.prioritized.is_none(), "followup cancelled");
+        assert_eq!(None, m.followup_until_clear);
+        assert_eq!(Enabled::Enabled, m.enabled, "stays enabled, not disabled");
+
+        // A fresh root now appends rather than replacing the prior word.
+        let m = apply(m, &chord(Target::Root(1), "c"));
+        assert_eq!("XZ", vis(&m));
+    }
+
+    #[test]
+    fn ref_followup_still_fires_when_no_idle_intervenes() {
+        // Control for the test above: with no crossing idle, the followup replaces.
+        let m = model(
+            SmartSpace::None,
+            vec![root(false, "a", "X", vec![child(false, "b", "Y", vec![])])],
+        );
+        let m = apply(m, &chord(Target::Root(0), "a"));
+        let m = apply(m, &chord(Target::Followup(0), "b"));
+        assert_eq!("Y", vis(&m));
+    }
+
+    #[test]
+    fn ref_smart_space_full_punct_erases_trailing_space() {
+        // smart-space full: expansion "X" -> "X " (trailing space, Sent). A following
+        // punctuation literal '.' erases the space -> "X.". A non-punct literal does
+        // not (control).
+        let m = model(SmartSpace::Full, vec![root(false, "a", "X", vec![])]);
+        let m = apply(m, &chord(Target::Root(0), "a"));
+        assert_eq!("X ", vis(&m));
+        assert!(m.smart_space_sent);
+        let m = apply(m, &KanataTransition::Literal { key: '.' });
+        assert_eq!("X.", vis(&m), "punctuation must erase the auto-added space");
+
+        // Control: a non-punct literal keeps the space.
+        let m2 = model(SmartSpace::Full, vec![root(false, "a", "X", vec![])]);
+        let m2 = apply(m2, &chord(Target::Root(0), "a"));
+        let m2 = apply(m2, &KanataTransition::Literal { key: 'u' });
+        assert_eq!("X u", vis(&m2), "a non-punct literal must keep the space");
     }
 
     #[test]
@@ -1816,8 +2215,13 @@ impl StateMachineTest for ThSut {
         // components: the output stream and the layout/layer resolution state.
         let present = capset(&[Cap::OutputKeyState, Cap::LayoutState]);
         let quiescent = crate::PRESSED_KEYS.lock().is_empty();
+        // No VisibleText component here, so the text-replay invariants
+        // (no_redundant_prefix_delete / no_delete_into_void) are deselected; the
+        // per-step fields are unused and left empty.
         let ctx = InvCtx {
             events: &raw,
+            step_events: "",
+            prev_text: "",
             quiescent,
         };
         if let Err((id, e)) = run_invariants(&present, &ctx) {
@@ -1972,6 +2376,8 @@ mod catalog_selection_tests {
         let bad = InvCtx {
             events: "out:↓A out:↓A",
             quiescent: true,
+            step_events: "",
+            prev_text: "",
         };
         // Selected (OutputKeyState present) => caught with teeth.
         assert!(
@@ -1992,10 +2398,14 @@ mod catalog_selection_tests {
         let at_rest = InvCtx {
             events: held,
             quiescent: true,
+            step_events: "",
+            prev_text: "",
         };
         let mid_gesture = InvCtx {
             events: held,
             quiescent: false,
+            step_events: "",
+            prev_text: "",
         };
         assert!(
             run_invariants(&coupled_caps(), &at_rest).is_err(),
@@ -2004,6 +2414,88 @@ mod catalog_selection_tests {
         assert!(
             run_invariants(&coupled_caps(), &mid_gesture).is_ok(),
             "a key held mid-gesture must not be flagged"
+        );
+    }
+
+    #[test]
+    fn redundant_prefix_delete_detector_flags_eager_echo_waste() {
+        // Echoed "a", then the chord backspaces it and retypes "abc" — the shared
+        // prefix "a" was deleted and retyped (the real zippychord echo waste). Net
+        // text is the correct "abc", so the net-text oracle is blind; the detector
+        // sees the 1 redundant delete.
+        let wasteful = "out:↓a out:↑a out:↓BSpace out:↑BSpace \
+                        out:↓a out:↑a out:↓b out:↑b out:↓c out:↑c";
+        assert_eq!(
+            1,
+            redundant_prefix_deletes("", wasteful),
+            "detector failed to flag an echoed-prefix delete-and-retype"
+        );
+    }
+
+    #[test]
+    fn necessary_delete_is_not_redundant_and_void_is_caught() {
+        // Replacing "b" with a *different* char "c" is necessary, not redundant.
+        let necessary = "out:↓a out:↑a out:↓b out:↑b out:↓BSpace out:↑BSpace out:↓c out:↑c";
+        assert_eq!(0, redundant_prefix_deletes("", necessary));
+
+        // A backspace on an empty buffer deletes into the void — a legality
+        // violation the live catalog must still catch.
+        let into_void = "out:↓BSpace out:↑BSpace";
+        let bad = InvCtx {
+            events: into_void,
+            quiescent: true,
+            step_events: into_void,
+            prev_text: "",
+        };
+        assert!(
+            run_invariants(&coupled_caps(), &bad).is_err(),
+            "no_delete_into_void failed to catch a backspace on an empty buffer"
+        );
+    }
+
+    #[test]
+    fn disabling_an_invariant_skips_it() {
+        // The env-var disable list parses and is honored by the filtered runner.
+        // Tested via the pure helpers (not by mutating the process env, which would
+        // race other tests).
+        assert_eq!(
+            parse_disabled_list(" no_double_press , , no_delete_into_void "),
+            ["no_double_press", "no_delete_into_void"]
+                .iter()
+                .map(|s| s.to_string())
+                .collect()
+        );
+        // Press A twice, release once: violates ONLY no_double_press (the key is
+        // released, so clean_release is satisfied; no text ops, so the replay
+        // invariants pass). Disabling no_double_press must flip the run to ok.
+        let double_press = InvCtx {
+            events: "out:↓A out:↓A out:↑A",
+            quiescent: true,
+            step_events: "",
+            prev_text: "",
+        };
+        // Selected and not disabled => caught.
+        assert!(run_invariants_filtered(&coupled_caps(), &double_press, &BTreeSet::new()).is_err());
+        // Disabled => skipped, run is ok despite the planted double-press.
+        let disabled = parse_disabled_list("no_double_press");
+        assert!(run_invariants_filtered(&coupled_caps(), &double_press, &disabled).is_ok());
+    }
+
+    #[test]
+    fn coincidental_tail_match_is_not_redundant() {
+        // Regression for a false positive: replacing "bcbb" (peak "bcbbc" after an
+        // eager key) with " aab". The two share NO common prefix (' ' vs 'b'), but
+        // both happen to have 'b' at index 3. In a backspace-only model you cannot
+        // keep index 3 without keeping 0..2, so deleting it is NECESSARY, not waste.
+        // The detector must measure the common prefix, not per-position coincidence.
+        let stream = "out:↓C out:↑C \
+                      out:↓BSpace out:↑BSpace out:↓BSpace out:↑BSpace out:↓BSpace out:↑BSpace \
+                      out:↓BSpace out:↑BSpace out:↓BSpace out:↑BSpace \
+                      out:↓Space out:↑Space out:↓A out:↑A out:↓A out:↑A out:↓B out:↑B";
+        assert_eq!(
+            0,
+            redundant_prefix_deletes("bcbb", stream),
+            "coincidental tail match wrongly counted as a redundant prefix delete"
         );
     }
 

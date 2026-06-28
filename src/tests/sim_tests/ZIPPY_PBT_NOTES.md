@@ -103,11 +103,41 @@ selected subset over each tick's event stream.
 
 Invariants run with an `InvCtx` (the raw event stream + a `quiescent` flag = all
 physical keys released at end of step), so an invariant can hold only at rest.
-Current catalog (all need `OutputKeyState`):
-- `no_double_press` — a key pressed twice with no release between (OS coalesces →
-  the second press is lost). Always.
-- `clean_release` — at rest, no output key left held (every `↓` has a `↑`);
-  catches dangling held keys and subsumes modifier-balance-at-rest. Quiescent-only.
+Current catalog:
+- `no_double_press` (`OutputKeyState`) — a key pressed twice with no release between
+  (OS coalesces → the second press is lost). Always.
+- `clean_release` (`OutputKeyState`) — at rest, no output key left held (every `↓`
+  has a `↑`); catches dangling held keys and subsumes modifier-balance-at-rest.
+  Quiescent-only.
+- `no_delete_into_void` (`OutputKeyState` + `VisibleText`) — a backspace never
+  deletes past the start of the reconstructed buffer (into the user's pre-existing
+  text / the prompt). Replays *this step's* output delta on the prior visible text
+  (`InvCtx.step_events` / `prev_text`), the per-activation granularity the
+  cumulative-stream invariants don't need.
+
+- `no_redundant_prefix_delete` (`OutputKeyState` + `VisibleText`) — efficiency: no
+  backspace deletes *below the common prefix* the impl could have preserved across an
+  eager/echo/followup replacement. **Live and currently RED** — it surfaces the OPEN
+  finding below across every generated instance. (Measuring the *common prefix*, not
+  per-position char identity, is load-bearing: an early version flagged a coincidental
+  tail-match `b` shared by `bcbbc` and ` aab`, but in a backspace-only model you cannot
+  keep index 3 without keeping 0..2 — pinned by `coincidental_tail_match_is_not_redundant`.)
+
+The catalog observable was raised from net-text to the **event stream** here: these
+invariants judge the keystrokes net-text collapses. The motivating win is a bug class
+net-text is structurally blind to — *net-neutral* keystroke waste (delete-then-retype
+that nets to the correct text); that is exactly the OPEN finding below.
+
+**Disabling invariants per run.** `run_invariants` honors a comma-separated
+`KANATA_PBT_DISABLE_INVARIANTS` env var (parsed by `parse_disabled_list`,
+`run_invariants_filtered` does the skipping). The whole suite is RED by default
+because `no_redundant_prefix_delete` is an open finding; to run the **correctness-only
+suite green** (e.g. to verify another dimension, or check nothing else regressed),
+disable it:
+`KANATA_PBT_DISABLE_INVARIANTS=no_redundant_prefix_delete cargo test --lib --features "zippychord simulated_output"`.
+This keeps full PBT breadth on the finding (default run flags every instance) while
+leaving an escape hatch that avoids masking other regressions. `disabling_an_invariant_skips_it`
+guards the mechanism.
 
 Rejected (kept as a lesson): `no_release_without_press` was added and immediately
 caught zippychord's **capitalize idiom** — `↑X ↓X` to re-assert a key under shift,
@@ -157,8 +187,15 @@ union). Remaining:
   followups whose key-by-key formation would transiently match a sibling followup
   or a root are pruned at generation — see deferred dimension 5.
 - Outputs: lowercase + uppercase letters + space.
-- smart-space none / add-space-only (full is generated but behaves like
-  add-space-only here since no punctuation is typed).
+- smart-space none / add-space-only / full. Full is now **non-vacuous**: a
+  punctuation literal (`.`, the default smart-space-punctuation `Dot`) is generated,
+  and after a full-mode trailing space it triggers the **auto-erase** path (`word .`
+  → `word.`), modelled in `type_literal` (mirrors `zippychord.rs` `Sent` state). The
+  model recomputes `smart_space_sent` per activation so a prior `Sent` can't go stale
+  across a suppressed/no-space activation. Inverting the erase makes the SM RED
+  (non-vacuous); `ref_smart_space_full_punct_erases_trailing_space` pins it
+  deterministically. (`,`/`;` are in the default set but deferred pending their
+  output-key-name decode — see deferred dimension 3.)
 - `suppress-space not-first-def-key` (generated only with an active smart-space):
   the trailing space is kept iff the first pressed key equals the chord's first
   definition key (leading space for a leading-space chord, else the min of the
@@ -167,8 +204,28 @@ union). Remaining:
   deliberate inversion of the predicate (`p == d`) makes the SM RED, confirming
   the dimension is non-vacuous.
 - Enable/disable timing: a literal keystroke disables (→ WaitEnable); a "full"
-  idle re-enables; "tiny" idles keep it disabled. `idle-reactivate-time` is
-  fixed large so the countdown only crosses on a full idle, never mid-hold.
+  idle re-enables; "tiny" idles keep it disabled.
+- Generated timers (the timers are no longer fixed): `on-first-press-chord-deadline`
+  (50–100), `followup-chord-deadline` (50–150, generated *independently* so the
+  followup-vs-initial divergence is exercised, not assumed equal), and
+  `idle-reactivate-time` (300–600). Bounds are chosen so every gesture still seats:
+  the chord deadline stays ≥ 50 (the proven floor for the ≤30-tick gesture span), and
+  `wait` stays above the tap-hold settle (250ms) so a tap can't re-enable zippy
+  mid-gesture. The dimension-12 `idle_cross` and the WaitEnable `idle_full` are sized
+  off the *generated* `followup_deadline` / `wait` (range floors `fd+10` / `wait+20`).
+- Followup-deadline expiry (dimension 12, the *crossing* half): while a followup is
+  pending an `idle_cross` (range floor `DEADLINE+10`, so it can never shrink below
+  the deadline) advances time past the followup deadline. The model arms a
+  `followup_until_clear` budget (= `DEADLINE`) exactly when `prioritized` becomes
+  `Some`, decrements it on `Idle`, and on crossing clears the followup but stays
+  **Enabled** — the cleared-but-enabled state, which is just `prioritized: None`
+  (no new enum state was needed; the original deferral over-stated the cost). The
+  generator then offers fresh roots again, so the *gesture after the expiry*
+  exercises the delete-accounting / common-prefix bookkeeping in that region — the
+  same family the backspace under-count bug lived in. Non-vacuous: deleting the
+  `prioritized = None` clear (so the model predicts the followup still fires) makes
+  the SM RED within ~2 cases. The sub-deadline "still pending" half is still
+  deferred — see dimension 12.
 - Free typing (`Tr::FreeType`): hold an arbitrary set of keys, NOT targeted to a
   chord, predicted as naive literal append. NOTE: the PBT first ran free typing
   over the FULL alphabet (chord keys included) and *discovered* that free-typed
@@ -187,7 +244,11 @@ union). Remaining:
    pending followup mid-hold (erasing the prior word); intended semantics
    unsettled. Generation currently offers only followup targets while a followup
    is pending.
-3. smart-space `full` punctuation auto-erase (no punctuation keys generated yet).
+3. smart-space `full` punctuation auto-erase — *mostly lifted*. The `.` (Dot)
+   punctuation literal is generated and its auto-erase modelled (see "Covered now").
+   Remaining: `,`/`;` (also in the default set) need their output-key-name decoded in
+   `key_to_char`/`net_text`; and a punctuation char as *chord output* (not just a
+   literal) is still not generated.
 4. AltGr / ShiftAltGr / no-erase / single-output outputs and
    `output-character-mappings` (only reachable via that config).
 5. Multi-key followups whose formation is *non-atomic*: a proper subset of the
@@ -224,6 +285,29 @@ union). Remaining:
     non-chord key through every gesture (and decoding its passthrough in the
     oracle). Covered by the deterministic `sim_zippychord_suppress_space_key` sim
     test instead. Only the `not-first-def-key` mode is generated by the SM.
+12. Followup-deadline expiry — *partially lifted*. While a followup is pending its
+    deadline counts down (armed when the preceding chord's keys are released).
+    - **Crossing (LIFTED, see "Covered now"):** an idle longer than the deadline
+      cancels the followup, leaving zippy enabled with no continuation. This is now
+      generated (`idle_cross`) and modelled by the `followup_until_clear` budget; the
+      cleared-but-enabled state is just `prioritized: None` (no new enum state), and
+      the post-expiry fresh-root gesture exercises the delete-accounting region.
+    - **Sub-deadline keep-pending (STILL DEFERRED):** a *shorter* idle that leaves the
+      followup pending. Modelling it exactly requires tracking the residual budget vs.
+      the duration of the *following* gesture (the gesture's own presses keep counting
+      down the same deadline), and the deadline *freezes* while the layout is deferring
+      output (`layout_pending`, same freeze as the chord-deadline press-order fix) —
+      so a tap-hold key in the gesture changes the time-base. The within-deadline
+      "still fires" behaviour is already pinned deterministically by
+      `sim_zippychord_followup_fires_within_idle_deadline` (and the past-deadline
+      cancel by `sim_zippychord_followup_expires_past_idle_deadline`). Lifting this
+      half means threading gesture-duration + the freeze flag into the budget model.
+    Because the SM never sets `followup-chord-deadline`, the deadline is
+    `on-first-press-chord-deadline` (= DEADLINE); `idle_cross`'s range floor
+    (`DEADLINE+10`) guarantees it crosses even under shrinking, so the precondition
+    `ms >= budget` holds and a sub-deadline idle is never applied while pending (which
+    would otherwise leak into the unmodeled "fresh root while a followup is pending"
+    corner, dimension 2).
 
 ## Triage workflow
 On a `kanata_proptest::zippychord_state_machine` failure:
@@ -235,6 +319,36 @@ On a `kanata_proptest::zippychord_state_machine` failure:
      the reference or tighten the generator and note it here.
    - **ambiguous** — intended semantics genuinely unspecified; document & decide.
 3. The failure message prints the transition, cfg, dict and raw event log.
+
+## Bug surfaced & FIXED: redundant echo/prefix delete
+Raising the coupled observable from net-text to the **event stream** (the
+`no_redundant_prefix_delete` invariant) surfaced a real inefficiency the net-text
+oracle is structurally blind to. When a chord's output *extends its own echoed input
+keys*, zippychord backspaced the echoed prefix and retyped it instead of preserving
+it. For `ab`→"abc" typed `a,b`: it echoed `a`, then on chord completion emitted `⌫`
+and retyped `abc` — net text correct ("abc"), but the backspace redundant. Almost
+every mnemonic chord hit this (`th`→"the", `b`→"by…"); harmless in a reliable pipe but
+the redundant deletes corrupt the result when dropped under load / on a laggy remote
+(the user-observed failure).
+- Distinct from the eager 2-key-inside-3-key case, which zippychord already handled
+  *optimally* — `ab`→"XY", `abc`→"XYZ" pressed `a,b,c` preserves "XY" and only appends
+  "Z" (the common-prefix optimization worked expansion-to-expansion). The gap was that
+  the optimization did not cover the **echoed input keys** vs the output (the *first*
+  activation of a hold).
+- FIXED in `zippychord.rs`: track the echoed-through keys (`zchd_typed_input`) and, on
+  the first activation, reuse `common_output_prefix_len(zchd_typed_input, output)` —
+  the same common-prefix optimization that already ran between activations, now also
+  between the echoed input and the output. `sim_zippychord_redundant_echo_delete` is
+  GREEN; the 9 golden keystroke tests were updated to the new (fewer-backspace) streams
+  (net text verified identical before/after — the fix is purely an efficiency change).
+- **Residual (still flagged): smart-space delete-and-readd across a followup.** A
+  followup's trailing smart-space is added *separately* from `zch_output`, so it falls
+  outside the common-prefix: replacing `foo `→`food ` deletes the trailing space and
+  re-adds it. `no_redundant_prefix_delete` still fires on this (so the SM is RED by
+  default; disable the invariant to run correctness-only green). It is a *distinct*
+  inefficiency from the echo delete — fixing it means extending the common-prefix to
+  include the trailing smart-space, which touches the delicate delete-accounting; left
+  as a separate follow-up.
 
 ## Bug surfaced & FIXED: incomplete reset (`zchd_same_hold_activation_count`)
 The stateful test (which reconfigures zippychord on every case and can panic
@@ -304,3 +418,31 @@ it is *at least as strong* (`HasValue`), or when the prioritized result was
 `Neither`. A prioritized `IsSubset` is now preserved, so a multi-key followup
 keeps accumulating its keys until it completes. The SM then surfaced the
 non-atomic-formation corner now deferred as dimension 5 above.
+
+## Feature & bug FIXED: separate `followup-chord-deadline`; followup deadline ignored across idle
+A new optional `defzippy` config `followup-chord-deadline` gives followup chords a
+deadline distinct from the initial `on-first-press-chord-deadline` (it falls back to
+that value when unset). The motivation: a tight initial deadline avoids accidental
+activations during normal typing, but the same tight value makes followups —
+especially multi-key ones — hard to land; the followup is a deliberate continuation
+of an already-activated chord, so it can safely use a longer window.
+
+Implementing it exposed a pre-existing bug: the followup deadline was effectively
+**ignored across an idle gap**. After a chord activated and its keys were released,
+`zchd_release_key` set `ticks_until_disable = 0` and the pending followup persisted
+until the next keypress (or the 10s force-reset) — so typing `do` then `s` *seconds*
+later still produced `does`. Two root causes:
+1. The release path zeroed the deadline instead of arming the followup deadline.
+2. `zchd_is_idle()` returned true whenever enabled with no keys held, so the idle
+   optimization (`can_block_update_idle_waiting`) froze the countdown anyway.
+FIXED by (1) arming `ticks_until_disable = followup_deadline` on the final release
+when a followup is pending, (2) making `zchd_is_idle()` false while a deadline is
+live (`ticks_until_disable > 0`), and (3) on deadline expiry, distinguishing a
+pending-followup expiry (clear the followup, stay **enabled** for a fresh chord) from
+an initial-deadline expiry (soft-reset to **disabled**, the accidental-typing guard).
+- Repros (**GREEN**): `sim_zippychord_followup_fires_within_idle_deadline` (200ms <
+  500ms → fires) and `sim_zippychord_followup_expires_past_idle_deadline` (600ms >
+  500ms → cancelled, key passes through). The pre-existing
+  `sim_zippychord_non_followup_subsequent_with_potential_followups_available` pins
+  that a fresh chord still fires after the followup is cancelled (regression guard
+  for over-aggressive disabling).
