@@ -408,7 +408,10 @@ fn prune_unmodelable_followups(children: &mut Vec<Child>, root_chords: &[BTreeSe
         .map(|(i, c)| {
             proper_subsets(&child_chord(c)).into_iter().all(|s| {
                 !root_chords.contains(&s)
-                    && !siblings.iter().enumerate().any(|(j, sib)| j != i && *sib == s)
+                    && !siblings
+                        .iter()
+                        .enumerate()
+                        .any(|(j, sib)| j != i && *sib == s)
             })
         })
         .collect();
@@ -474,17 +477,13 @@ impl KanataModel {
                     *r.keys.iter().next().expect("root has >=1 key")
                 }
             }),
-            Target::Followup(i) => self
-                .prioritized
-                .as_ref()
-                .and_then(|c| c.get(*i))
-                .map(|c| {
-                    if c.lead_space {
-                        ' '
-                    } else {
-                        *c.keys.iter().next().expect("followup has >=1 key")
-                    }
-                }),
+            Target::Followup(i) => self.prioritized.as_ref().and_then(|c| c.get(*i)).map(|c| {
+                if c.lead_space {
+                    ' '
+                } else {
+                    *c.keys.iter().next().expect("followup has >=1 key")
+                }
+            }),
         }
     }
 
@@ -725,7 +724,9 @@ impl ReferenceStateMachine for KanataRef {
         // Degrades to a tiny idle when there are none so the arm is always a valid
         // strategy (the weight then just adds harmless idles).
         let taphold: BoxedStrategy<KanataTransition> = if state.taphold.is_empty() {
-            (1u16..=3).prop_map(|ms| KanataTransition::Idle { ms }).boxed()
+            (1u16..=3)
+                .prop_map(|ms| KanataTransition::Idle { ms })
+                .boxed()
         } else {
             let idxs: Vec<usize> = (0..state.taphold.len()).collect();
             let tap = proptest::sample::select(idxs.clone()).prop_map(KanataTransition::TapHoldTap);
@@ -872,17 +873,15 @@ impl ReferenceStateMachine for KanataRef {
                         }
                         k
                     }),
-                    Target::Followup(i) => state
-                        .prioritized
-                        .as_ref()
-                        .and_then(|c| c.get(*i))
-                        .map(|c| {
+                    Target::Followup(i) => {
+                        state.prioritized.as_ref().and_then(|c| c.get(*i)).map(|c| {
                             let mut k = c.keys.clone();
                             if c.lead_space {
                                 k.insert(' ');
                             }
                             k
-                        }),
+                        })
+                    }
                 };
                 match target_keys {
                     Some(tk) => {
@@ -927,9 +926,7 @@ impl ReferenceStateMachine for KanataRef {
             }
             // A literal must stay a plain key; if the dict shrank a key into a
             // tap-hold input, drop it (tap-hold tap is covered by TapHoldTap).
-            KanataTransition::Literal { key } => {
-                !state.taphold.iter().any(|k| k.input == *key)
-            }
+            KanataTransition::Literal { key } => !state.taphold.iter().any(|k| k.input == *key),
             // Dimension 12: while a followup is pending the only idle the model
             // handles exactly is one that *crosses* the deadline (cancel → cleared-
             // but-enabled). A sub-deadline idle would leave the followup pending, and
@@ -962,7 +959,11 @@ fn arb_cfg() -> impl Strategy<Value = ModelCfg> {
         let suppress: BoxedStrategy<SuppressSpace> = if smart_space == SmartSpace::None {
             Just(SuppressSpace::None).boxed()
         } else {
-            prop_oneof![Just(SuppressSpace::None), Just(SuppressSpace::NotFirstDefKey)].boxed()
+            prop_oneof![
+                Just(SuppressSpace::None),
+                Just(SuppressSpace::NotFirstDefKey)
+            ]
+            .boxed()
         };
         // Timers, generated independently within safe bounds:
         //  - chord_deadline ≥ 50: the proven floor for the ≤30-tick gesture span
@@ -1272,8 +1273,17 @@ fn common_prefix_len(a: &[char], b: &[char]) -> usize {
 /// - `void_deletes`: backspaces on an empty buffer (deleting past the prompt).
 ///
 /// "old" for an episode is the buffer at its peak (just before the burst's first
-/// backspace); "new" is the final buffer. `floor` is the lowest length the burst
-/// reached. Redundancy for the episode is `max(0, common_prefix(old,new) - floor)`.
+/// backspace); "new" is the text that episode *produced and that survived* — the
+/// buffer just before the NEXT delete burst (the next episode's peak), or the final
+/// buffer for the last episode. `floor` is the lowest length the burst reached.
+/// Redundancy for the episode is `max(0, common_prefix(old,new) - floor)`.
+///
+/// Using the next episode's peak (not the global final buffer) is load-bearing once a
+/// single step has more than one delete burst: an early episode that legitimately
+/// rewrote a position (e.g. echoed lowercase `a` → uppercase `A` for `ab`->"A") must
+/// not be blamed for a coincidental match against a final buffer that a *later*
+/// episode produced by fully overwriting that position again. Each episode is judged
+/// only against what it itself left on screen.
 fn replay_step(prev_text: &str, step_events: &str) -> (usize, usize) {
     let mut buf: Vec<char> = prev_text.chars().collect();
     let mut shift = false;
@@ -1326,7 +1336,18 @@ fn replay_step(prev_text: &str, step_events: &str) -> (usize, usize) {
     }
     let redundant = episodes
         .iter()
-        .map(|(old, floor)| common_prefix_len(old, &buf).saturating_sub(*floor))
+        .enumerate()
+        .map(|(i, (old, floor))| {
+            // Judge each episode against the text it produced and that stood until
+            // the next deletion (the next episode's peak), or the final buffer if it
+            // is the last episode — never a later episode's overwrite of the same
+            // position.
+            let new = episodes
+                .get(i + 1)
+                .map(|(next_peak, _)| next_peak.as_slice())
+                .unwrap_or(&buf);
+            common_prefix_len(old, new).saturating_sub(*floor)
+        })
         .sum();
     (redundant, void_deletes)
 }
@@ -1504,6 +1525,129 @@ pub(super) fn sut_net_text(k: &Kanata) -> String {
     net_text(&events)
 }
 
+/// The visible text a chord's output renders to (apply each `OutItem` to a buffer).
+/// Distinct from `out_to_tsv`, which renders a backspace as the literal `⌫` glyph.
+fn out_display_string(out: &[OutItem]) -> String {
+    let mut buf: Vec<char> = Vec::new();
+    for item in out {
+        match item {
+            OutItem::Char(c) => buf.push(*c),
+            OutItem::Backspace => {
+                buf.pop();
+            }
+        }
+    }
+    buf.into_iter().collect()
+}
+
+/// The sequence of *owned* visible-text states (the text past `prev_text`) the SUT
+/// passes through while replaying one transition's output events — i.e. the buffer
+/// after every output token. Used to see which intermediate expansions were
+/// transiently displayed within a single gesture.
+fn owned_text_trajectory(prev_text: &str, step_events: &str) -> Vec<String> {
+    let base = prev_text.chars().count();
+    let mut buf: Vec<char> = prev_text.chars().collect();
+    let mut shift = false;
+    let mut states = Vec::new();
+    for tok in step_events.split_whitespace() {
+        if let Some(name) = tok.strip_prefix("out:↓") {
+            match name {
+                "LShift" | "RShift" => shift = true,
+                "BSpace" => {
+                    buf.pop();
+                }
+                "Space" => buf.push(' '),
+                n => {
+                    if let Some(c) = key_to_char(n) {
+                        buf.push(if shift { c.to_ascii_uppercase() } else { c });
+                    }
+                }
+            }
+        } else if let Some(name) = tok.strip_prefix("out:↑") {
+            if matches!(name, "LShift" | "RShift") {
+                shift = false;
+            }
+        }
+        states.push(buf.iter().skip(base).collect());
+    }
+    states
+}
+
+/// Over-eager chord expansion: while the user is pressing the keys of one chord, an
+/// *independent* chord whose key-set is a proper subset of those keys fires eagerly
+/// and shows its own expansion, which is then thrown away as the larger chord
+/// completes (e.g. pressing the keys of `sure` flashes `er`->"error" then
+/// `res`->"response" before settling on "sure"). The net text is correct, so the
+/// net-text oracle is blind; this catches the visible churn.
+///
+/// Returns a description when over-eager churn is detected. Only independent *root*
+/// chords count: a followup is a deliberate multi-step refinement (`dy`->"day" then
+/// `dy 1`->"Monday") generated as a *separate* gesture, so it never appears inside a
+/// single root gesture and cannot false-positive here. A sub-chord whose expansion is
+/// a *prefix* the final output extends (`ab`->"XY" inside `abc`->"XYZ") is the
+/// legitimate overlap optimization, not churn, so it is excluded.
+fn detect_overeager_expansion(
+    ref_state: &KanataModel,
+    transition: &KanataTransition,
+    prev_text: &str,
+    step_events: &str,
+) -> Option<String> {
+    let (target, events) = match transition {
+        KanataTransition::ChordExpansion { target, events } => (target, events),
+        _ => return None,
+    };
+    let target_root = match target {
+        Target::Root(i) => Some(*i),
+        Target::Followup(_) => return None,
+    };
+    let press_order = KanataTransition::press_order(events);
+    let gesture_keys: BTreeSet<char> = press_order.iter().copied().collect();
+    // While a chord is forming the input keys are echoed through verbatim, so the
+    // owned text passes through every prefix of the pressed-key string. A trajectory
+    // state that is merely such an echo prefix is NOT a sub-chord expansion — even if
+    // its characters happen to equal a sub-chord's output (e.g. `a`->"c" vs the echoed
+    // key `c`). Lower-cased so it ignores the shift state the echo may carry.
+    let echo: String = press_order.iter().flat_map(|c| c.to_lowercase()).collect();
+    let is_echo_prefix = |o: &str| echo.starts_with(&o.to_lowercase());
+    let trajectory = owned_text_trajectory(prev_text, step_events);
+    let final_owned = trajectory.last().cloned().unwrap_or_default();
+    for (i, sub) in ref_state.roots.iter().enumerate() {
+        if Some(i) == target_root {
+            continue;
+        }
+        let sub_keys = root_chord(sub);
+        // Proper subset of the keys held in this gesture.
+        if sub_keys.len() >= gesture_keys.len() || !sub_keys.is_subset(&gesture_keys) {
+            continue;
+        }
+        let disp = out_display_string(&sub.out);
+        if disp.is_empty() {
+            continue;
+        }
+        // The final output extends this expansion (a kept prefix) => legitimate
+        // overlap, not churn.
+        if final_owned.starts_with(&disp) {
+            continue;
+        }
+        // The sub-chord's expansion was shown on screen (optionally with its trailing
+        // smart space) then discarded — and as a genuine *expansion*, not just the
+        // echo of the input keys that coincidentally spells the same thing.
+        let with_space = format!("{disp} ");
+        if trajectory
+            .iter()
+            .any(|o| (o == &disp || o == &with_space) && !is_echo_prefix(o))
+        {
+            return Some(format!(
+                "sub-chord {{{}}}->\"{disp}\" (keys ⊊ gesture {{{}}}) was displayed then \
+                 discarded while forming the larger chord (final owned text \"{final_owned}\")",
+                sub_keys.iter().collect::<String>(),
+                gesture_keys.iter().collect::<String>(),
+            ));
+        }
+    }
+    None
+}
+
 impl StateMachineTest for Sut {
     type SystemUnderTest = Sut;
     type Reference = KanataRef;
@@ -1611,6 +1755,19 @@ impl StateMachineTest for Sut {
         if let Err((id, e)) = run_invariants(&present, &ctx) {
             panic!(
                 "invariant `{id}` violated: {e}\n  transition: {transition:?}\n  cfg: {}\n  dict: {}\n  raw: {raw}",
+                ref_state.cfg_string(),
+                ref_state.tsv().replace('\n', " | "),
+            );
+        }
+        // Model-aware invariant (needs the dictionary, so it lives here rather than in
+        // the event-stream-only catalog): no over-eager expansion of an independent
+        // sub-chord while forming a larger chord. Honors the same disable env var.
+        if !disabled_invariant_ids().contains("no_overeager_expansion")
+            && let Some(msg) =
+                detect_overeager_expansion(ref_state, &transition, &prev_text, &step_events)
+        {
+            panic!(
+                "invariant `no_overeager_expansion` violated: {msg}\n  transition: {transition:?}\n  cfg: {}\n  dict: {}\n  raw: {raw}",
                 ref_state.cfg_string(),
                 ref_state.tsv().replace('\n', " | "),
             );
@@ -1832,7 +1989,12 @@ mod reference_tests {
     fn ref_smart_space_followup_replaces_with_trailing_space() {
         let m = model(
             SmartSpace::AddOnly,
-            vec![root(false, "a", "day", vec![child(false, "b", "Monday", vec![])])],
+            vec![root(
+                false,
+                "a",
+                "day",
+                vec![child(false, "b", "Monday", vec![])],
+            )],
         );
         let m = apply(m, &chord(Target::Root(0), "a"));
         assert_eq!("day ", vis(&m));
@@ -1891,7 +2053,12 @@ mod reference_tests {
         let m = model_suppress(
             SmartSpace::AddOnly,
             SuppressSpace::NotFirstDefKey,
-            vec![root(false, "ab", "day", vec![child(false, "c", "Monday", vec![])])],
+            vec![root(
+                false,
+                "ab",
+                "day",
+                vec![child(false, "c", "Monday", vec![])],
+            )],
         );
         // Root pressed 'a' first (== def) -> "day ".
         let m = apply(m, &chord(Target::Root(0), "ab"));
@@ -1906,7 +2073,12 @@ mod reference_tests {
         // root's output (and its trailing smart space) with its own.
         let m = model(
             SmartSpace::Full,
-            vec![root(false, "bv", "vibe", vec![child(false, "cd", "vibing", vec![])])],
+            vec![root(
+                false,
+                "bv",
+                "vibe",
+                vec![child(false, "cd", "vibing", vec![])],
+            )],
         );
         let m = apply(m, &chord(Target::Root(0), "bv"));
         assert_eq!("vibe ", vis(&m));
@@ -1924,7 +2096,12 @@ mod reference_tests {
             model_suppress(
                 SmartSpace::AddOnly,
                 SuppressSpace::NotFirstDefKey,
-                vec![root(false, "ab", "day", vec![child(false, "cd", "Monday", vec![])])],
+                vec![root(
+                    false,
+                    "ab",
+                    "day",
+                    vec![child(false, "cd", "Monday", vec![])],
+                )],
             )
         };
         let m = apply(mk(), &chord(Target::Root(0), "ab"));
@@ -1945,7 +2122,12 @@ mod reference_tests {
             model_suppress(
                 SmartSpace::AddOnly,
                 SuppressSpace::NotFirstDefKey,
-                vec![root(true, "b", "wash", vec![child(true, "a", "Washington", vec![])])],
+                vec![root(
+                    true,
+                    "b",
+                    "wash",
+                    vec![child(true, "a", "Washington", vec![])],
+                )],
             )
         };
         let m = apply(mk(), &chord(Target::Root(0), "b "));
@@ -2233,7 +2415,8 @@ impl StateMachineTest for ThSut {
         // Construction oracle: the accumulated output stream must match exactly.
         let got = event_seq(&raw);
         assert_eq!(
-            ref_state.expected, got,
+            ref_state.expected,
+            got,
             "\n  transition: {:?}\n  cfg: {}\n  raw: {}",
             transition,
             ref_state.cfg_string(),

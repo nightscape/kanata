@@ -1116,7 +1116,7 @@ impl Kanata {
             let layout = self.layout.b();
             layout.waiting.is_some() || !layout.queue.is_empty()
         };
-        zippy_tick(self.caps_word.is_some(), layout_pending);
+        zippy_tick(&mut self.kbd_out, self.caps_word.is_some(), layout_pending)?;
         self.prev_keys.clear();
         self.prev_keys.append(&mut self.cur_keys);
         self.tick_held_vkeys();

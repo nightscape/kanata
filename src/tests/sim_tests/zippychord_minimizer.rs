@@ -552,8 +552,12 @@ impl Captured {
                 expected,
             } => {
                 for (order, want) in permutations(cluster).iter().zip(expected) {
-                    match run_gesture(&self.tsv_file_name, &kbd, &tsv, &cluster_gesture(order, timing))
-                    {
+                    match run_gesture(
+                        &self.tsv_file_name,
+                        &kbd,
+                        &tsv,
+                        &cluster_gesture(order, timing),
+                    ) {
                         Some(got) if &got == want => {}
                         _ => return false,
                     }
@@ -596,10 +600,7 @@ fn minimize(captured: &Captured) -> Minimized {
         "pre-flight: the full config must reproduce the bug (predicate or repro spec is wrong)"
     );
 
-    let strategy = prop::collection::vec(
-        prop_oneof![1 => Just(false), BIG => Just(true)],
-        n..=n,
-    );
+    let strategy = prop::collection::vec(prop_oneof![1 => Just(false), BIG => Just(true)], n..=n);
     let config = Config {
         cases: 64,
         // Sized for tiny per-candidate parse cost; not 1e6. Each iter is a
@@ -608,7 +609,8 @@ fn minimize(captured: &Captured) -> Minimized {
         failure_persistence: None,
         ..Config::default()
     };
-    let mut runner = TestRunner::new_with_rng(config, TestRng::from_seed(RngAlgorithm::ChaCha, &SEED));
+    let mut runner =
+        TestRunner::new_with_rng(config, TestRng::from_seed(RngAlgorithm::ChaCha, &SEED));
 
     // Inverted semantics: a test *failure* means the bug *reproduces*, so
     // proptest shrinks toward the smallest reproducing config.
@@ -726,8 +728,13 @@ fn build_captured_metamorphic(
     let expected: Vec<String> = permutations(&cluster)
         .iter()
         .map(|order| {
-            run_gesture(&tsv_file_name, &kbd_text, &full_tsv, &cluster_gesture(order, &timing))
-                .expect("full config must parse for every permutation")
+            run_gesture(
+                &tsv_file_name,
+                &kbd_text,
+                &full_tsv,
+                &cluster_gesture(order, &timing),
+            )
+            .expect("full config must parse for every permutation")
         })
         .collect();
     assert!(
@@ -769,7 +776,10 @@ static BUILTIN_KBD: &str = "(defsrc spc n)\n\
 fn env_ms(name: &str, default: u128) -> u128 {
     std::env::var(name)
         .ok()
-        .map(|v| v.parse().unwrap_or_else(|_| panic!("{name} must be a number")))
+        .map(|v| {
+            v.parse()
+                .unwrap_or_else(|_| panic!("{name} must be a number"))
+        })
         .unwrap_or(default)
 }
 
@@ -831,7 +841,11 @@ fn minimize_external() {
                 if let Ok(spec) = std::env::var("KANATA_MIN_SWEEP") {
                     let parts: Vec<&str> = spec.split(':').collect();
                     let (knob, lo, hi) = match parts.as_slice() {
-                        [knob, lo, hi] => (*knob, lo.parse::<u128>().unwrap(), hi.parse::<u128>().unwrap()),
+                        [knob, lo, hi] => (
+                            *knob,
+                            lo.parse::<u128>().unwrap(),
+                            hi.parse::<u128>().unwrap(),
+                        ),
                         _ => panic!("KANATA_MIN_SWEEP=knob:lo:hi"),
                     };
                     let mut found = 0;
@@ -919,10 +933,16 @@ fn minimize_external() {
                     return;
                 }
 
-                println!("  trigger {input:?} -> {:?}", run_gesture(&fname, &kbd_text, &full_tsv, &trigger));
+                println!(
+                    "  trigger {input:?} -> {:?}",
+                    run_gesture(&fname, &kbd_text, &full_tsv, &trigger)
+                );
                 if let Some(r) = &reference {
                     let rs = std::env::var("KANATA_MIN_EXPECTED").unwrap();
-                    println!("  reference {rs:?} -> {:?}", run_gesture(&fname, &kbd_text, &full_tsv, r));
+                    println!(
+                        "  reference {rs:?} -> {:?}",
+                        run_gesture(&fname, &kbd_text, &full_tsv, r)
+                    );
                 }
                 return;
             }
@@ -933,7 +953,10 @@ fn minimize_external() {
     };
 
     let min = minimize(&captured);
-    println!("=== minimized .kbd ===\n{}\n=== minimized .tsv ===\n{}", min.kbd, min.tsv);
+    println!(
+        "=== minimized .kbd ===\n{}\n=== minimized .tsv ===\n{}",
+        min.kbd, min.tsv
+    );
     println!("kept units: {:?}", min.kept_units);
 }
 
@@ -1067,7 +1090,10 @@ mod kbd_tests {
         let emitted = debug_form(&sexprs);
         // tap-hold collapsed to its tap action `a`.
         assert!(!emitted.contains("tap-hold"), "collapsed: {emitted}");
-        assert!(emitted.contains("\"quoted atom\""), "quotes survived: {emitted}");
+        assert!(
+            emitted.contains("\"quoted atom\""),
+            "quotes survived: {emitted}"
+        );
         // Re-parses with intact structure.
         let reparsed = parse_kbd(&emitted);
         assert_eq!(reparsed.len(), 1);

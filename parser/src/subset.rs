@@ -177,6 +177,28 @@ where
         }
     }
 
+    /// True if some stored key is a *strict superset* of `get_key` — i.e. a longer
+    /// known chord that contains every item of `get_key` plus at least one more. Lets
+    /// a caller distinguish "this is a complete chord, and nothing longer extends it"
+    /// (a maximal chord) from "this is a complete chord that is also a prefix of a
+    /// longer one" (where eager activation would be over-eager). The key must be
+    /// sorted, like `ssm_get_or_is_subset_ksorted`.
+    pub fn ssm_has_strict_superset_ksorted(&self, get_key: impl AsRef<[K]>) -> bool {
+        let get_key = get_key.as_ref();
+        let Some(first) = get_key.first() else {
+            // The empty set is a strict subset of every stored chord.
+            return !self.is_empty();
+        };
+        // Every stored key containing a strict superset of `get_key` necessarily
+        // contains `get_key`'s first item, so this bucket holds all candidates.
+        match self.map.get(first) {
+            None => false,
+            Some(keyvals_for_key_item) => keyvals_for_key_item.iter().any(|kv| {
+                kv.key.len() > get_key.len() && get_key.iter().all(|kitem| kv.key.contains(kitem))
+            }),
+        }
+    }
+
     pub fn is_empty(&self) -> bool {
         self.map.is_empty()
     }
