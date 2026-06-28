@@ -152,14 +152,17 @@ union). Remaining:
 - Top-level chords; key-set semantics; optional leading space (swallowed).
 - Overlap within a hold via randomized press/release order (the bug lives here).
 - Multi-word sequences (fresh activations append).
-- Single-key followups (incl. multi-level).
+- Followups (incl. multi-level): single- AND multi-key components, each with an
+  optional leading space (the double-space "Washington" `␣w␣␣a` form). Multi-key
+  followups whose key-by-key formation would transiently match a sibling followup
+  or a root are pruned at generation — see deferred dimension 5.
 - Outputs: lowercase + uppercase letters + space.
 - smart-space none / add-space-only (full is generated but behaves like
   add-space-only here since no punctuation is typed).
 - `suppress-space not-first-def-key` (generated only with an active smart-space):
   the trailing space is kept iff the first pressed key equals the chord's first
-  definition key (leading space for a leading-space root, else the min of the
-  sorted key set; the child key for a followup). The placement oracle predicts it
+  definition key (leading space for a leading-space chord, else the min of the
+  sorted key set — same rule for roots and followups). The placement oracle predicts it
   exactly from the already-shuffled press order — no new keystroke modelling. A
   deliberate inversion of the predicate (`p == d`) makes the SM RED, confirming
   the dimension is non-vacuous.
@@ -187,7 +190,17 @@ union). Remaining:
 3. smart-space `full` punctuation auto-erase (no punctuation keys generated yet).
 4. AltGr / ShiftAltGr / no-erase / single-output outputs and
    `output-character-mappings` (only reachable via that config).
-5. Multi-key followup groups and double-space (Washington-style) sequences.
+5. Multi-key followups whose formation is *non-atomic*: a proper subset of the
+   followup's keys that exactly matches a sibling followup or a root. Because the
+   keys are pressed in shuffled order, that subset is transiently held and the
+   smaller chord activates eagerly mid-press — changing which followups are
+   pending (or firing a fresh root), so the gesture no longer resolves to the
+   intended followup. The oracle assumes atomic formation, so
+   `prune_unmodelable_followups` drops these at generation (and on every shrink,
+   since it runs inside the `prop_map`). Multi-key followups with no such subset
+   overlap ARE covered now. (A subset that only *partially* matches the pending
+   followup stays `IsSubset` and keeps accumulating — fine; this was the
+   subset-clobber bug fixed below.)
 6. Held modifiers (shift/altgr) and caps-word context during typing.
 7. Key-repeat events; non-letter chord input keys; punctuation/digit output chars
    (would need `net_text` extended to decode them).
@@ -271,3 +284,23 @@ deadline thus measures how fast the *user* pressed the chord keys, not how long 
 so the deadline still disables zippy for deliberately-held-then-extended typing.
 This is the cross-layer signal the rx-brief / [[zippy-pbt-layout-blindspot]] noted
 zippychord lacks when it sees only the post-layout output stream.
+
+## Bug surfaced & FIXED: multi-key followup never activates (subset clobber)
+Extending the SM to generate **multi-key followup components** (`xy ab`→…, not
+just `xy a`) immediately failed: a followup with >1 key never fired — its keys
+were typed literally. Root cause in `zippychord.rs` (`zch_press_key`): when a
+followup is pending, the code looked up the input keys in the prioritized
+(followup) map, and only *kept* that result if it was `HasValue`; otherwise it
+overwrote it with the main-chord lookup. Pressing the first key of a multi-key
+followup yields `IsSubset` against the pending followup (a partial match) — not
+`HasValue` — so it was discarded in favor of the main-chord lookup, which was
+`Neither`, triggering `zchd_soft_reset()` and wiping the pending followup before
+the remaining keys could arrive. Single-key followups dodged this because the
+first (only) press is an exact `HasValue` match.
+- Repro (`zippychord_sim_tests::sim_zippychord_multikey_followup`, **GREEN**):
+  dict `xy`→"foo", `xy ab`→"BAR"; pressing x,y then a,b now yields "BAR".
+FIXED by only letting the main-chord lookup override the prioritized result when
+it is *at least as strong* (`HasValue`), or when the prioritized result was
+`Neither`. A prioritized `IsSubset` is now preserved, so a multi-key followup
+keeps accumulating its keys until it completes. The SM then surfaced the
+non-atomic-formation corner now deferred as dimension 5 above.

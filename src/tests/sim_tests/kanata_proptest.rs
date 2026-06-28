@@ -83,7 +83,15 @@ enum OutItem {
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 struct Child {
-    key: char,
+    // A followup component is symmetric with a root: an optional leading space
+    // plus a multi-key set drawn from INPUT_ALPHA (e.g. `vb ig` -> `vibing`). The
+    // parser only ever treats a space as the *first* key of a component (it strips
+    // a leading space then ends the component at the next space), written in the
+    // TSV as a double space — the ` w  a` -> `(space w),(space a)` Washington case.
+    // `default` so older persisted seeds (single-key, no lead space) deserialize.
+    #[serde(default)]
+    lead_space: bool,
+    keys: BTreeSet<char>,
     out: Vec<OutItem>,
     followups: Vec<Child>,
 }
@@ -283,7 +291,10 @@ impl KanataModel {
 fn chord_keys(roots: &[Root]) -> BTreeSet<char> {
     fn collect(children: &[Child], s: &mut BTreeSet<char>) {
         for c in children {
-            s.insert(c.key);
+            s.extend(c.keys.iter().copied());
+            if c.lead_space {
+                s.insert(' ');
+            }
             collect(&c.followups, s);
         }
     }
@@ -298,9 +309,77 @@ fn chord_keys(roots: &[Root]) -> BTreeSet<char> {
     s
 }
 
+/// Full chord key-set of a followup component: its keys plus the leading space.
+fn child_chord(c: &Child) -> BTreeSet<char> {
+    let mut k = c.keys.clone();
+    if c.lead_space {
+        k.insert(' ');
+    }
+    k
+}
+
+/// Full chord key-set of a root: its keys plus the leading space.
+fn root_chord(r: &Root) -> BTreeSet<char> {
+    let mut k = r.keys.clone();
+    if r.lead_space {
+        k.insert(' ');
+    }
+    k
+}
+
+/// Proper, non-empty subsets of `set` (excludes the empty set and `set` itself).
+fn proper_subsets(set: &BTreeSet<char>) -> Vec<BTreeSet<char>> {
+    let elems: Vec<char> = set.iter().copied().collect();
+    let n = elems.len();
+    let full = (1u32 << n) - 1;
+    (1..full)
+        .map(|mask| {
+            (0..n)
+                .filter(|i| mask & (1 << i) != 0)
+                .map(|i| elems[i])
+                .collect()
+        })
+        .collect()
+}
+
+/// Drop followups the placement oracle cannot model. A multi-key followup is
+/// pressed key-by-key (in shuffled order), so its formation transiently *holds*
+/// every proper subset of its keys. If such a subset exactly matches a sibling
+/// followup or a root, that chord activates eagerly mid-press — changing which
+/// followups are pending (or firing a fresh root) — and the gesture no longer
+/// resolves to the intended followup. The oracle assumes the target forms
+/// atomically, so these cases are excluded. Single-key followups have no proper
+/// subset and are always kept. (A subset that is merely a *partial* match of the
+/// pending followup stays `IsSubset` and keeps accumulating — that is fine; only
+/// exact matches of a smaller chord break atomic formation.) Deferred dimension;
+/// see ZIPPY_PBT_NOTES.md. Runs inside the generator's `prop_map`, so it also
+/// applies to every shrunk dictionary.
+fn prune_unmodelable_followups(children: &mut Vec<Child>, root_chords: &[BTreeSet<char>]) {
+    let siblings: Vec<BTreeSet<char>> = children.iter().map(child_chord).collect();
+    let keep: Vec<bool> = children
+        .iter()
+        .enumerate()
+        .map(|(i, c)| {
+            proper_subsets(&child_chord(c)).into_iter().all(|s| {
+                !root_chords.contains(&s)
+                    && !siblings.iter().enumerate().any(|(j, sib)| j != i && *sib == s)
+            })
+        })
+        .collect();
+    let mut kept = keep.into_iter();
+    children.retain(|_| kept.next().unwrap());
+    for c in children.iter_mut() {
+        prune_unmodelable_followups(&mut c.followups, root_chords);
+    }
+}
+
 fn emit_children(children: &[Child], prefix: &str, lines: &mut Vec<String>) {
     for c in children {
-        let input = format!("{prefix} {}", c.key);
+        let keystr: String = c.keys.iter().collect();
+        // One space separates components; a leading-space followup adds a second
+        // (the significant space key), producing the double space the parser reads.
+        let sep = if c.lead_space { "  " } else { " " };
+        let input = format!("{prefix}{sep}{keystr}");
         lines.push(format!("{input}\t{}", out_to_tsv(&c.out)));
         emit_children(&c.followups, &input, lines);
     }
@@ -337,7 +416,8 @@ impl KanataModel {
     /// leading space for a leading-space root, otherwise the first character
     /// (roots serialize their `BTreeSet` keys in sorted order, so the first char
     /// is the minimum — which is exactly what the parser records as the chord's
-    /// first def key). Followup components are a single key, so it is that key.
+    /// first def key). Followup components are symmetric: their leading space if
+    /// present, otherwise the minimum of their (sorted) keys.
     /// Mirrors `ZchChordOutput::zch_first_def_key` in the runtime.
     fn first_def_key(&self, target: &Target) -> Option<char> {
         match target {
@@ -352,7 +432,13 @@ impl KanataModel {
                 .prioritized
                 .as_ref()
                 .and_then(|c| c.get(*i))
-                .map(|c| c.key),
+                .map(|c| {
+                    if c.lead_space {
+                        ' '
+                    } else {
+                        *c.keys.iter().next().expect("followup has >=1 key")
+                    }
+                }),
         }
     }
 
@@ -470,7 +556,11 @@ impl ReferenceStateMachine for KanataRef {
         let mut targets: Vec<(Target, Vec<char>)> = Vec::new();
         if let Some(children) = &state.prioritized {
             for (i, c) in children.iter().enumerate() {
-                targets.push((Target::Followup(i), vec![c.key]));
+                let mut keys: Vec<char> = c.keys.iter().copied().collect();
+                if c.lead_space {
+                    keys.push(' ');
+                }
+                targets.push((Target::Followup(i), keys));
             }
         } else {
             for (i, r) in state.roots.iter().enumerate() {
@@ -665,7 +755,13 @@ impl ReferenceStateMachine for KanataRef {
                         .prioritized
                         .as_ref()
                         .and_then(|c| c.get(*i))
-                        .map(|c| BTreeSet::from([c.key])),
+                        .map(|c| {
+                            let mut k = c.keys.clone();
+                            if c.lead_space {
+                                k.insert(' ');
+                            }
+                            k
+                        }),
                 };
                 match target_keys {
                     Some(tk) => {
@@ -758,11 +854,14 @@ fn arb_child(depth: u32) -> BoxedStrategy<Child> {
     } else {
         prop::collection::vec(arb_child(depth - 1), 0..=1).boxed()
     };
-    (prop::sample::select(INPUT_ALPHA), arb_out(), followups)
-        .prop_map(|(key, out, followups)| Child {
-            key,
+    let keys =
+        prop::collection::btree_set(prop::sample::select(INPUT_ALPHA), 1..=INPUT_ALPHA.len());
+    (any::<bool>(), keys, arb_out(), followups)
+        .prop_map(|(lead_space, keys, out, followups)| Child {
+            lead_space,
+            keys,
             out,
-            // dedup sibling children by key
+            // dedup sibling children by their full chord (lead space + key set)
             followups: dedup_children(followups),
         })
         .boxed()
@@ -772,7 +871,7 @@ fn dedup_children(children: Vec<Child>) -> Vec<Child> {
     let mut seen = BTreeSet::new();
     children
         .into_iter()
-        .filter(|c| seen.insert(c.key))
+        .filter(|c| seen.insert((c.lead_space, c.keys.clone())))
         .collect()
 }
 
@@ -812,16 +911,18 @@ fn arb_root() -> impl Strategy<Value = Root> {
 fn arb_roots() -> impl Strategy<Value = Vec<Root>> {
     prop::collection::vec(arb_root(), 1..=5).prop_map(|roots| {
         let mut seen = BTreeSet::new();
-        roots
+        let mut roots: Vec<Root> = roots
             .into_iter()
-            .filter(|r| {
-                let mut k = r.keys.clone();
-                if r.lead_space {
-                    k.insert(' ');
-                }
-                seen.insert(k)
-            })
-            .collect()
+            .filter(|r| seen.insert(root_chord(r)))
+            .collect();
+        // Prune followups whose multi-key formation would eagerly activate a
+        // sibling or root mid-press (unmodelable by the placement oracle). Needs
+        // the full root key-set list, so it runs after roots are deduped.
+        let root_chords: Vec<BTreeSet<char>> = roots.iter().map(root_chord).collect();
+        for r in roots.iter_mut() {
+            prune_unmodelable_followups(&mut r.followups, &root_chords);
+        }
+        roots
     })
 }
 
@@ -1221,9 +1322,10 @@ mod reference_tests {
             followups,
         }
     }
-    fn child(key: char, o: &str, followups: Vec<Child>) -> Child {
+    fn child(lead_space: bool, keys: &str, o: &str, followups: Vec<Child>) -> Child {
         Child {
-            key,
+            lead_space,
+            keys: keys.chars().collect(),
             out: out(o),
             followups,
         }
@@ -1312,7 +1414,7 @@ mod reference_tests {
     fn ref_followup_replaces_prior() {
         let m = model(
             SmartSpace::None,
-            vec![root(false, "a", "X", vec![child('b', "Y", vec![])])],
+            vec![root(false, "a", "X", vec![child(false, "b", "Y", vec![])])],
         );
         let m = apply(m, &chord(Target::Root(0), "a"));
         assert_eq!("X", vis(&m));
@@ -1331,7 +1433,7 @@ mod reference_tests {
     fn ref_smart_space_followup_replaces_with_trailing_space() {
         let m = model(
             SmartSpace::AddOnly,
-            vec![root(false, "a", "day", vec![child('b', "Monday", vec![])])],
+            vec![root(false, "a", "day", vec![child(false, "b", "Monday", vec![])])],
         );
         let m = apply(m, &chord(Target::Root(0), "a"));
         assert_eq!("day ", vis(&m));
@@ -1385,18 +1487,75 @@ mod reference_tests {
 
     #[test]
     fn ref_suppress_followup_single_key_never_suppressed() {
-        // A followup component is a single key, so the first pressed key is
-        // always its first def key -> followups keep their trailing space.
+        // A single-key followup has only one possible first pressed key, which is
+        // therefore always its first def key -> it keeps its trailing space.
         let m = model_suppress(
             SmartSpace::AddOnly,
             SuppressSpace::NotFirstDefKey,
-            vec![root(false, "ab", "day", vec![child('c', "Monday", vec![])])],
+            vec![root(false, "ab", "day", vec![child(false, "c", "Monday", vec![])])],
         );
         // Root pressed 'a' first (== def) -> "day ".
         let m = apply(m, &chord(Target::Root(0), "ab"));
         assert_eq!("day ", vis(&m));
         let m = apply(m, &chord(Target::Followup(0), "c"));
         assert_eq!("Monday ", vis(&m));
+    }
+
+    #[test]
+    fn ref_multi_key_followup_replaces_and_smart_spaces() {
+        // `vb` -> `vibe`, `vb cd` -> `vibing`: a multi-key followup replaces the
+        // root's output (and its trailing smart space) with its own.
+        let m = model(
+            SmartSpace::Full,
+            vec![root(false, "bv", "vibe", vec![child(false, "cd", "vibing", vec![])])],
+        );
+        let m = apply(m, &chord(Target::Root(0), "bv"));
+        assert_eq!("vibe ", vis(&m));
+        // Followup pressed with both keys -> prior word + space erased, replaced.
+        let m = apply(m, &chord(Target::Followup(0), "cd"));
+        assert_eq!("vibing ", vis(&m));
+    }
+
+    #[test]
+    fn ref_suppress_multi_key_followup_order_dependent() {
+        // With >1 key a followup CAN be press-order-suppressed: its first def key
+        // is the minimum char ('c'). Pressing 'd' first (!= def) suppresses the
+        // trailing space; pressing 'c' first keeps it.
+        let mk = || {
+            model_suppress(
+                SmartSpace::AddOnly,
+                SuppressSpace::NotFirstDefKey,
+                vec![root(false, "ab", "day", vec![child(false, "cd", "Monday", vec![])])],
+            )
+        };
+        let m = apply(mk(), &chord(Target::Root(0), "ab"));
+        // Followup pressed 'd' first (!= def 'c') -> space suppressed.
+        let suppressed = apply(m.clone(), &chord(Target::Followup(0), "dc"));
+        assert_eq!("Monday", vis(&suppressed));
+        // Followup pressed 'c' first (== def) -> space kept.
+        let kept = apply(m, &chord(Target::Followup(0), "cd"));
+        assert_eq!("Monday ", vis(&kept));
+    }
+
+    #[test]
+    fn ref_leading_space_followup_first_def_key_is_space() {
+        // ` w  a` Washington case: a leading-space followup's first def key is the
+        // space. Pressing space first keeps the trailing space; a letter first
+        // suppresses it.
+        let mk = || {
+            model_suppress(
+                SmartSpace::AddOnly,
+                SuppressSpace::NotFirstDefKey,
+                vec![root(true, "b", "wash", vec![child(true, "a", "Washington", vec![])])],
+            )
+        };
+        let m = apply(mk(), &chord(Target::Root(0), "b "));
+        // Followup keys are {a, space}; press 'a' first (!= def space) -> suppress.
+        let suppressed = apply(m.clone(), &chord(Target::Followup(0), "a "));
+        assert_eq!("Washington", vis(&suppressed));
+        // Press space first (== def) -> trailing space kept.
+        let kept = apply(m, &chord(Target::Followup(0), " a"));
+        assert_eq!("Washington ", vis(&kept));
     }
 
     #[test]

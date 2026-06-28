@@ -1042,3 +1042,35 @@ fn sim_zippychord_suppress_space_noop_without_smart_space() {
     assert_eq!("day", d_first, "smart-space disabled -> no trailing space");
     assert_eq!("day", y_first, "smart-space disabled -> no trailing space");
 }
+
+
+
+#[test]
+fn sim_zippychord_multikey_followup() {
+    // Regression: a followup component with more than one key (`xy ab`) must
+    // activate. Previously the first key's partial (subset) match against the
+    // pending followup was discarded in favor of a `Neither` main-chord lookup,
+    // soft-resetting the followup so it never completed.
+    let cfg = "(defsrc lalt)(deflayer base lalt)(defzippy file on-first-press-chord-deadline 50 idle-reactivate-time 500 smart-space none)";
+    let content = "
+xy	foo
+xy ab	BAR
+";
+    let result = simulate_with_zippy_file_content(
+        cfg,
+        "d:x d:y t:1 u:x u:y t:300 d:a d:b t:1 u:a u:b t:300",
+        content,
+    )
+    .to_ascii();
+    assert_eq!(
+        "dn:X t:1ms dn:BSpace up:BSpace dn:F up:F dn:O up:O dn:O up:O \
+         t:1ms up:X t:1ms up:Y t:298ms \
+         dn:A t:1ms \
+         dn:BSpace up:BSpace dn:BSpace up:BSpace dn:BSpace up:BSpace dn:BSpace up:BSpace \
+         dn:LShift up:B dn:B up:LShift dn:LShift up:A dn:A up:LShift dn:LShift dn:R up:R up:LShift \
+         t:1ms up:A t:1ms up:B",
+        result
+    );
+}
+
+

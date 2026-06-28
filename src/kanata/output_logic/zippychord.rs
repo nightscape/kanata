@@ -361,14 +361,21 @@ impl ZchState {
                 .0
                 .ssm_get_or_is_subset_ksorted(self.zchd.zchd_input_keys.zchik_keys());
         }
-        let mut is_prioritized_activation = false;
-        if !matches!(activation, HasValue(..)) {
-            activation = self
+        let is_prioritized_activation = matches!(activation, HasValue(..));
+        if !is_prioritized_activation {
+            let from_main = self
                 .zch_chords
                 .0
                 .ssm_get_or_is_subset_ksorted(self.zchd.zchd_input_keys.zchik_keys());
-        } else {
-            is_prioritized_activation = true;
+            // Only let the main-chord lookup override a prioritized result when it
+            // is at least as strong. Otherwise a multi-key followup's partial
+            // (`IsSubset`) match would be clobbered by a `Neither` from the main
+            // chords — soft-resetting away the pending followup so it can never
+            // accumulate its remaining keys (single-key followups dodge this by
+            // returning `HasValue` on the first press).
+            if matches!(from_main, HasValue(..)) || matches!(activation, Neither) {
+                activation = from_main;
+            }
         }
 
         match activation {
