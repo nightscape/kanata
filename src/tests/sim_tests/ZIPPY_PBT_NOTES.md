@@ -19,10 +19,15 @@ Philosophy: generate as broadly as possible; narrow only for invalid input
 
 ## Tests
 
-- `kanata_proptest::zippychord_state_machine` — the stateful PBT. **GREEN** (the
-  backspace under-count it once reproduced is fixed in `zippychord.rs`; its two
-  shrunk cases are pinned as regressions). Seed persisted in
+- `kanata_proptest::zippychord_state_machine` — the stateful PBT. **GREEN**: net text,
+  the catalog invariants (incl. the now-fixed `no_redundant_prefix_delete`), the
+  model-aware `no_overeager_expansion`, and the backspace under-count regressions all
+  pass. Seed persisted in
   `proptest-regressions/state-machine/kanata_state_machine__tests__sim_tests__kanata_proptest__Sut.jsonl`.
+- `zippychord_sim_tests::sim_zippychord_no_overeager_expansion` and
+  `sim_zippychord_deferred_prefix_chord_fires` — **GREEN**: deterministic guards for the
+  over-eager-expansion fix (forming `sure` types no churn; a deferred prefix chord still
+  fires on a deadline pause and on release).
 - `reference_tests::*` — reference self-consistency unit tests (GREEN); validate
   the oracle's placement logic against hand-computed expectations.
 - `zippychord_sim_tests::repro_overlap_underdelete` — minimal deterministic
@@ -117,27 +122,49 @@ Current catalog:
 
 - `no_redundant_prefix_delete` (`OutputKeyState` + `VisibleText`) — efficiency: no
   backspace deletes *below the common prefix* the impl could have preserved across an
-  eager/echo/followup replacement. **Live and currently RED** — it surfaces the OPEN
-  finding below across every generated instance. (Measuring the *common prefix*, not
-  per-position char identity, is load-bearing: an early version flagged a coincidental
-  tail-match `b` shared by `bcbbc` and ` aab`, but in a backspace-only model you cannot
-  keep index 3 without keeping 0..2 — pinned by `coincidental_tail_match_is_not_redundant`.)
+  eager/echo/followup replacement. **GREEN** — the redundant-delete finding it surfaced is
+  fixed (see the fixed-bug section below; the impl now reconciles each activation against an
+  explicit on-screen model). Two measurement subtleties are load-bearing and pinned:
+  (1) measuring the *common prefix*, not per-position char identity — an early version
+  flagged a coincidental tail-match `b` shared by `bcbbc` and ` aab`, but in a backspace-only
+  model you cannot keep index 3 without keeping 0..2 (`coincidental_tail_match_is_not_redundant`);
+  (2) judging each delete-burst against *the next burst's peak* (the text that burst produced
+  and that survived), not the global final buffer — else an early burst that legitimately
+  rewrote a position is blamed for a coincidental match against a final buffer a later burst
+  produced (`replay_step`'s per-episode target; the `a`->"A" case in the fixed-bug section).
 
 The catalog observable was raised from net-text to the **event stream** here: these
 invariants judge the keystrokes net-text collapses. The motivating win is a bug class
 net-text is structurally blind to — *net-neutral* keystroke waste (delete-then-retype
-that nets to the correct text); that is exactly the OPEN finding below.
+that nets to the correct text); the redundant-delete instance of that is now fixed.
+
+**`no_overeager_expansion` (model-aware) — GREEN.** Not a catalog (`InvCtx`-only)
+invariant: it needs the chord *dictionary*, so it lives in the SM `apply` alongside the
+net-text oracle (`detect_overeager_expansion`). It flags *over-eager chord expansion*:
+while the keys of one chord are being pressed, an **independent** chord whose key-set is
+a *proper subset* of those keys fires eagerly, shows its own expansion, and that
+expansion is then discarded as the larger chord completes — e.g. pressing the keys of
+`sure` flashing `er`->"error" then `res`->"response" before settling on "sure". Net text
+is correct, so the net-text oracle is blind; this catches the visible churn. Soundness
+guards: only independent *root* chords count — a followup (`dy`->"day" then
+`dy 1`->"Monday") is a deliberate multi-step refinement generated as a *separate*
+gesture, so it never appears inside a single root gesture; a sub-chord whose expansion is
+a *prefix the final extends* (`ab`->"XY" inside `abc`->"XYZ") is the legitimate overlap
+optimization; and a trajectory state that is merely the echoed input keys is not an
+expansion (excludes the `a`->"c" vs echoed-`c` coincidence). **Now GREEN** — the bug it
+surfaced is fixed by the `zchd_deferred` deferral (see the fixed-bug section below).
+Deterministic siblings: `sim_zippychord_no_overeager_expansion` and
+`sim_zippychord_deferred_prefix_chord_fires`.
 
 **Disabling invariants per run.** `run_invariants` honors a comma-separated
 `KANATA_PBT_DISABLE_INVARIANTS` env var (parsed by `parse_disabled_list`,
-`run_invariants_filtered` does the skipping). The whole suite is RED by default
-because `no_redundant_prefix_delete` is an open finding; to run the **correctness-only
-suite green** (e.g. to verify another dimension, or check nothing else regressed),
-disable it:
-`KANATA_PBT_DISABLE_INVARIANTS=no_redundant_prefix_delete cargo test --lib --features "zippychord simulated_output"`.
-This keeps full PBT breadth on the finding (default run flags every instance) while
-leaving an escape hatch that avoids masking other regressions. `disabling_an_invariant_skips_it`
-guards the mechanism.
+`run_invariants_filtered` does the catalog skipping; the SM `apply` honors the same var
+for `no_overeager_expansion`). The suite is GREEN by default now that both the
+redundant-delete and over-eager findings are fixed; the disable hatch remains for
+isolating a single dimension when triaging a future regression, e.g.
+`KANATA_PBT_DISABLE_INVARIANTS=no_overeager_expansion cargo test --lib --features "zippychord simulated_output"`.
+(`no_redundant_prefix_delete` also remains disable-able for isolating that dimension.)
+`disabling_an_invariant_skips_it` guards the catalog mechanism.
 
 Rejected (kept as a lesson): `no_release_without_press` was added and immediately
 caught zippychord's **capitalize idiom** — `↑X ↓X` to re-assert a key under shift,
@@ -320,6 +347,44 @@ On a `kanata_proptest::zippychord_state_machine` failure:
    - **ambiguous** — intended semantics genuinely unspecified; document & decide.
 3. The failure message prints the transition, cfg, dict and raw event log.
 
+## Bug surfaced & FIXED: over-eager chord expansion
+Pressing the keys of one chord while an **independent** chord whose key-set is a
+*proper subset* of them is transiently held made the sub-chord fire eagerly: its
+expansion was typed, shown, then thrown away as the larger chord completed. User repro
+(`~/.../chords.tsv`): chords `er`->"error", `res`->"response", `sure`->"sure"; pressing
+the keys for `sure` (which home-row mods can deliver in the order e,r,s,u) flashed
+"error", then "response", then "sure", each replacing the last — very visible churn,
+even though the net result "sure" is correct.
+- Caught by the model-aware `no_overeager_expansion` invariant (in the SM `apply`, not
+  the `InvCtx`-only catalog, because it needs the dictionary): for a `ChordExpansion`
+  targeting a root, it reconstructs the SUT's owned-text trajectory and flags any
+  *independent root* whose key-set is a proper subset of the gesture keys and whose
+  expansion is displayed-then-discarded. Followups (separate gestures), prefix-extended
+  overlaps (`ab`->"XY" inside `abc`->"XYZ"), and trajectory states that are merely the
+  echoed input keys (a sub-chord output that coincidentally spells the same thing, e.g.
+  `a`->"c" vs the echoed key `c`) are excluded, so it fires only on genuine churn.
+- **NOT a redundant-delete instance** — the deletes were individually optimal (the
+  intermediate words share no prefix with their replacement); the waste was that the
+  intermediate *expansions were typed at all*.
+- FIXED by **deferring eager activation while a longer chord is still reachable**
+  (`zchd_deferred` in `zippychord.rs`). When a press completes a chord whose held keys
+  are also a *proper subset* of a longer chord (`SubsetMap::ssm_has_strict_superset_ksorted`),
+  the chord is not expanded; its keys are echoed through and the complete match is
+  remembered. It fires only if nothing longer supersedes it — when the chord deadline
+  elapses (`zch_tick`, now threaded a `&mut KbdOut`) or the keys start being released
+  (`zch_release_key`). A later press completing the longer chord activates that instead,
+  and the echoes are cleaned up by the normal common-prefix accounting. The deferred
+  chord reuses the echoed prefix when it does fire, so `er` after a pause types only the
+  fresh `ror` of "error", not a delete+retype. **Exemption:** a chord with any *no-erase*
+  output is never deferred — no-erase is the deliberate "persistent prefix" mechanism
+  (deposit a char that survives the next activation), which deferral would defeat.
+- GREEN regressions: `no_overeager_expansion` PBT invariant; deterministic
+  `zippychord_sim_tests::sim_zippychord_no_overeager_expansion` (forming `sure` never
+  types the `o` only the discarded expansions contain) and
+  `sim_zippychord_deferred_prefix_chord_fires` (the deferred `er` still fires "error" on
+  both a deadline pause and a release). Many golden keystroke streams were updated to the
+  new churn-free form (net text verified identical before/after).
+
 ## Bug surfaced & FIXED: redundant echo/prefix delete
 Raising the coupled observable from net-text to the **event stream** (the
 `no_redundant_prefix_delete` invariant) surfaced a real inefficiency the net-text
@@ -335,20 +400,32 @@ the redundant deletes corrupt the result when dropped under load / on a laggy re
   "Z" (the common-prefix optimization worked expansion-to-expansion). The gap was that
   the optimization did not cover the **echoed input keys** vs the output (the *first*
   activation of a hold).
-- FIXED in `zippychord.rs`: track the echoed-through keys (`zchd_typed_input`) and, on
-  the first activation, reuse `common_output_prefix_len(zchd_typed_input, output)` —
-  the same common-prefix optimization that already ran between activations, now also
-  between the echoed input and the output. `sim_zippychord_redundant_echo_delete` is
-  GREEN; the 9 golden keystroke tests were updated to the new (fewer-backspace) streams
-  (net text verified identical before/after — the fix is purely an efficiency change).
-- **Residual (still flagged): smart-space delete-and-readd across a followup.** A
-  followup's trailing smart-space is added *separately* from `zch_output`, so it falls
-  outside the common-prefix: replacing `foo `→`food ` deletes the trailing space and
-  re-adds it. `no_redundant_prefix_delete` still fires on this (so the SM is RED by
-  default; disable the invariant to run correctness-only green). It is a *distinct*
-  inefficiency from the echo delete — fixing it means extending the common-prefix to
-  include the trailing smart-space, which touches the delicate delete-accounting; left
-  as a separate follow-up.
+- FIXED in `zippychord.rs` by reconciling every activation against a single explicit
+  on-screen model (`zchd_on_screen`): the exact `ZchOutput` sequence zippychord currently
+  has on screen in its owned region (echoed input keys, the most recent activation's
+  output, and any trailing smart space). Each activation reuses
+  `common_output_prefix_len(zchd_on_screen, output)`, so any already-correct character is
+  kept rather than backspaced and re-typed — the echoed input keys (first activation), a
+  prior overlapping output, AND the trailing/internal spaces the earlier per-`zch_output`
+  prefix could not see. This unification replaced the three older ad-hoc mechanisms
+  (`zchd_typed_input` for the first activation, `zchd_prior_activation` for overlaps, and a
+  short-lived `zchd_prior_activation_had_smart_space`/`zchd_same_hold_activation_count`).
+  The existing `chars_to_delete`/`prior_output_count` accounting is unchanged — it already
+  equals the on-screen display length, so the only behavioural change is a more accurate
+  (larger) common prefix → fewer redundant deletes. The golden keystroke tests were updated
+  to the new (fewer-backspace) streams (net text verified identical before/after — the fix
+  is purely an efficiency change). `sim_zippychord_redundant_echo_delete` is GREEN.
+- **Smart-space delete-and-readd across a followup — NOW FIXED (was the residual).** A
+  followup's (or overlap's) trailing smart-space is added *separately* from `zch_output`,
+  so the per-`zch_output` prefix stopped at the word: replacing `foo `→`food ` deleted the
+  trailing space and re-added it, and `a `→`a  A` deleted the echoed/prior space that
+  aligned with the output's internal space. The on-screen model above includes that space,
+  so the prefix now spans it. Two cases compose: the prior space lands on an *internal*
+  output char (handled by the prefix run over `zchd_on_screen`), or this activation's *own*
+  trailing smart space lands on an on-screen space (`preserve_trailing_space` skips the
+  redundant tap while still accounting for the space). Covered by the now-green
+  `no_redundant_prefix_delete` PBT invariant and the updated `sim_zippychord_smartspace_overlap`
+  golden stream (the `dn:BSpace up:BSpace dn:Space up:Space` delete-and-readd is gone).
 
 ## Bug surfaced & FIXED: incomplete reset (`zchd_same_hold_activation_count`)
 The stateful test (which reconfigures zippychord on every case and can panic
@@ -358,7 +435,11 @@ mid-scenario during shrinking) revealed that `zchd_reset()` — called by
 release). A reset mid-activation therefore left it stale, and since it gates the
 common-prefix logic it leaked across tests (flaky `sim_zippychord_smartspace_overlap`).
 Fixed in `zippychord.rs` `zchd_reset` by zeroing it. (`simulate_with_file_content`
-also now clears the global `PRESSED_KEYS` defensively.)
+also now clears the global `PRESSED_KEYS` defensively.) NOTE: `zchd_same_hold_activation_count`
+was later **removed entirely** by the on-screen-model unification (see the redundant
+echo/prefix-delete fix above) — the common-prefix logic no longer branches on
+first-vs-overlap activation, so the counter (and its reset hazard) no longer exist. The
+`zchd_on_screen` buffer it gated is cleared in `zchd_clear_history`, reached by `zchd_reset`.
 
 ## Bug surfaced & FIXED: backspace under-count (common-prefix optimization)
 When an activation reuses characters from a prior eager activation via the

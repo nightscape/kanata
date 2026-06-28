@@ -25,6 +25,31 @@ fn simulate_with_zippy_file_content(cfg: &str, input: &str, content: &str) -> St
     simulate_with_file_content(cfg, input, fcontent)
 }
 
+// Over-eager chord expansion (RED — open bug). When the keys of one chord are
+// pressed and an *independent* chord whose keys are a proper subset of them is
+// transiently held, the sub-chord fires eagerly and its expansion is shown, then
+// thrown away as the larger chord completes. Real-world repro: chords `er`->"error",
+// `res`->"response", `sure`->"sure"; pressing the keys for `sure` in the order
+// e,r,s,u (as home-row mods can reorder them) flashes "error" then "response" before
+// "sure". The net text is correct ("sure"), so the net-text oracle is blind; the
+// churn is the bug.
+//
+// Intended behaviour, asserted here so the test fails until it is fixed: forming
+// `sure` types only "sure" — never the letter `o`, which appears only in the
+// discarded "error"/"response" expansions. (Mirrors the PBT `no_overeager_expansion`
+// invariant.)
+#[test]
+fn sim_zippychord_no_overeager_expansion() {
+    let content = "er\terror\nres\tresponse\nsure\tsure\n";
+    let result = simulate_with_zippy_file_content(ZIPPY_CFG, "d:e d:r d:s d:u t:10 t:300", content)
+        .to_ascii();
+    assert!(
+        !result.contains("dn:O"),
+        "over-eager expansion: forming `sure` flashed an intermediate expansion \
+         (`error`/`response`) — the letter `o` was typed though `sure` has none.\n  raw: {result}"
+    );
+}
+
 #[test]
 fn sim_zippychord_capitalize() {
     let result = simulate_with_zippy_file_content(
@@ -72,8 +97,8 @@ fn sim_zippychord_followup_no_prev() {
     .to_ascii();
     assert_eq!(
         "dn:R t:10ms up:R t:10ms dn:D t:1ms \
-        dn:BSpace up:BSpace dn:BSpace up:BSpace \
-        dn:R up:R dn:E up:E dn:C up:C dn:I up:I dn:P up:P dn:I up:I dn:E up:E dn:N up:N dn:T up:T",
+        dn:BSpace up:BSpace \
+        dn:E up:E dn:C up:C dn:I up:I dn:P up:P dn:I up:I dn:E up:E dn:N up:N dn:T up:T",
         result
     );
 }
@@ -108,19 +133,14 @@ fn sim_zippychord_overlap() {
     )
     .to_ascii();
     assert_eq!(
-        "dn:R t:10ms dn:BSpace up:BSpace \
-        up:R dn:R dn:E up:E up:Q dn:Q dn:U up:U dn:E up:E dn:S up:S dn:T up:T t:10ms \
-        dn:Space up:Space \
-        up:A dn:A dn:S up:S dn:S up:S dn:I up:I dn:S up:S dn:T up:T up:A dn:A dn:N up:N dn:C up:C dn:E up:E",
+        "dn:R t:10ms dn:Q t:10ms dn:BSpace up:BSpace dn:E up:E up:Q dn:Q dn:U up:U dn:E up:E dn:S up:S dn:T up:T dn:Space up:Space up:A dn:A dn:S up:S dn:S up:S dn:I up:I dn:S up:S dn:T up:T up:A dn:A dn:N up:N dn:C up:C dn:E up:E",
         result
     );
     let result =
         simulate_with_zippy_file_content(ZIPPY_CFG, "d:1 d:2 d:3 d:4 t:20", ZIPPY_FILE_CONTENT)
             .to_ascii();
     assert_eq!(
-        "dn:Kb1 t:1ms dn:BSpace up:BSpace dn:H up:H dn:I up:I t:1ms dn:Kb3 t:1ms \
-         dn:BSpace up:BSpace dn:BSpace up:BSpace dn:BSpace up:BSpace \
-         dn:B up:B dn:Y up:Y dn:E up:E",
+        "dn:Kb1 t:1ms dn:Kb2 t:1ms dn:Kb3 t:1ms dn:BSpace up:BSpace dn:BSpace up:BSpace dn:BSpace up:BSpace dn:B up:B dn:Y up:Y dn:E up:E",
         result
     );
 }
@@ -311,8 +331,7 @@ fn sim_zippychord_triple_combo() {
     assert_eq!(
         "dn:Dot t:1ms dn:BSpace up:BSpace up:G dn:G dn:I up:I dn:T up:T t:9ms up:Dot t:1ms up:G \
          t:1ms dn:F t:8ms up:F t:1ms \
-         dn:BSpace up:BSpace dn:BSpace up:BSpace dn:BSpace up:BSpace dn:BSpace up:BSpace \
-         dn:G up:G dn:I up:I dn:T up:T dn:Space up:Space \
+         dn:BSpace up:BSpace dn:Space up:Space \
          dn:F up:F dn:E up:E dn:T up:T dn:C up:C dn:H up:H dn:Space up:Space \
          dn:Minus up:Minus up:P dn:P",
         result
@@ -339,7 +358,7 @@ fn sim_zippychord_prefix() {
     )
     .to_ascii();
     assert_eq!(
-        "dn:P t:1ms up:R dn:R dn:E up:E dn:Space up:Space dn:BSpace up:BSpace t:1ms up:P t:1ms up:R t:7ms dn:BSpace up:BSpace dn:BSpace up:BSpace dn:U up:U dn:L up:L dn:L up:L dn:Space up:Space dn:R up:R dn:E up:E up:Q dn:Q dn:U up:U dn:E up:E dn:S up:S dn:T up:T t:1ms up:Q",
+        "dn:P t:1ms dn:R t:1ms dn:E up:E dn:Space up:Space dn:BSpace up:BSpace up:P t:1ms up:R t:7ms dn:BSpace up:BSpace dn:BSpace up:BSpace dn:U up:U dn:L up:L dn:L up:L dn:Space up:Space dn:R up:R dn:E up:E up:Q dn:Q dn:U up:U dn:E up:E dn:S up:S dn:T up:T t:1ms up:Q",
         result
     );
     let result = simulate_with_zippy_file_content(
@@ -350,10 +369,7 @@ fn sim_zippychord_prefix() {
     .to_ascii()
     .no_time()
     .no_releases();
-    assert_eq!(
-        "dn:P dn:R dn:E dn:Space dn:BSpace dn:BSpace dn:BSpace dn:A dn:R dn:T dn:N dn:E dn:R",
-        result
-    );
+    assert_eq!("dn:P dn:R dn:BSpace dn:A dn:R dn:T dn:N dn:E dn:R", result);
 }
 
 #[test]
@@ -379,7 +395,7 @@ fn sim_zippychord_smartspace_full() {
     )
     .to_ascii();
     assert_eq!(
-        "dn:P t:1ms up:R dn:R dn:E up:E dn:Space up:Space dn:BSpace up:BSpace t:9ms up:P t:1ms up:R t:99ms dn:Dot t:10ms up:Dot",
+        "dn:P t:1ms dn:R t:9ms dn:E up:E dn:Space up:Space dn:BSpace up:BSpace up:P t:1ms up:R t:99ms dn:Dot t:10ms up:Dot",
         result
     );
 }
@@ -407,7 +423,7 @@ fn sim_zippychord_smartspace_spaceonly() {
     )
     .to_ascii();
     assert_eq!(
-        "dn:P t:1ms up:R dn:R dn:E up:E dn:Space up:Space dn:BSpace up:BSpace t:9ms up:P t:1ms up:R t:99ms dn:Dot t:10ms up:Dot",
+        "dn:P t:1ms dn:R t:9ms dn:E up:E dn:Space up:Space dn:BSpace up:BSpace up:P t:1ms up:R t:99ms dn:Dot t:10ms up:Dot",
         result
     );
 }
@@ -435,7 +451,7 @@ fn sim_zippychord_smartspace_none() {
     )
     .to_ascii();
     assert_eq!(
-        "dn:P t:1ms up:R dn:R dn:E up:E dn:Space up:Space dn:BSpace up:BSpace t:9ms up:P t:1ms up:R t:99ms dn:Dot t:10ms up:Dot",
+        "dn:P t:1ms dn:R t:9ms dn:E up:E dn:Space up:Space dn:BSpace up:BSpace up:P t:1ms up:R t:99ms dn:Dot t:10ms up:Dot",
         result
     );
 }
@@ -450,11 +466,7 @@ fn sim_zippychord_smartspace_overlap() {
     )
     .to_ascii();
     assert_eq!(
-        "dn:R t:10ms dn:BSpace up:BSpace \
-        up:R dn:R dn:E up:E up:Q dn:Q dn:U up:U dn:E up:E dn:S up:S dn:T up:T dn:Space up:Space t:10ms \
-        dn:BSpace up:BSpace dn:Space up:Space \
-        up:A dn:A dn:S up:S dn:S up:S dn:I up:I dn:S up:S dn:T up:T up:A dn:A dn:N up:N dn:C up:C dn:E up:E \
-        dn:Space up:Space",
+        "dn:R t:10ms dn:Q t:10ms dn:BSpace up:BSpace dn:E up:E up:Q dn:Q dn:U up:U dn:E up:E dn:S up:S dn:T up:T dn:Space up:Space up:A dn:A dn:S up:S dn:S up:S dn:I up:I dn:S up:S dn:T up:T up:A dn:A dn:N up:N dn:C up:C dn:E up:E dn:Space up:Space",
         result
     );
     let result = simulate_with_zippy_file_content(
@@ -465,10 +477,7 @@ fn sim_zippychord_smartspace_overlap() {
     )
     .to_ascii();
     assert_eq!(
-        "dn:Kb1 t:1ms dn:BSpace up:BSpace dn:H up:H dn:I up:I dn:Space up:Space \
-         t:1ms dn:Kb3 t:1ms \
-         dn:BSpace up:BSpace dn:BSpace up:BSpace dn:BSpace up:BSpace dn:BSpace up:BSpace \
-         dn:B up:B dn:Y up:Y dn:E up:E dn:Space up:Space",
+        "dn:Kb1 t:1ms dn:Kb2 t:1ms dn:Kb3 t:1ms dn:BSpace up:BSpace dn:BSpace up:BSpace dn:BSpace up:BSpace dn:B up:B dn:Y up:Y dn:E up:E dn:Space up:Space",
         result
     );
 }
@@ -521,10 +530,7 @@ fn sim_zippychord_smartspace_custom_punc() {
     )
     .to_ascii();
     assert_eq!(
-        "dn:Kb1 t:1ms dn:BSpace up:BSpace \
-         dn:H up:H dn:I up:I dn:Space up:Space t:9ms \
-         up:Kb1 t:1ms up:Kb2 t:9ms \
-         dn:LShift t:1ms dn:BSpace up:BSpace dn:Kb1 t:1ms up:Kb1 t:1ms up:LShift",
+        "dn:Kb1 t:1ms dn:Kb2 t:9ms dn:BSpace up:BSpace dn:BSpace up:BSpace dn:H up:H dn:I up:I dn:Space up:Space up:Kb1 t:1ms up:Kb2 t:9ms dn:LShift t:1ms dn:BSpace up:BSpace dn:Kb1 t:1ms up:Kb1 t:1ms up:LShift",
         result
     );
 
@@ -536,10 +542,7 @@ fn sim_zippychord_smartspace_custom_punc() {
     )
     .to_ascii();
     assert_eq!(
-        "dn:Kb1 t:1ms dn:BSpace up:BSpace \
-         dn:H up:H dn:I up:I dn:Space up:Space t:9ms \
-         up:Kb1 t:1ms up:Kb2 t:9ms \
-         dn:BSpace up:BSpace dn:Z t:1ms up:Z",
+        "dn:Kb1 t:1ms dn:Kb2 t:9ms dn:BSpace up:BSpace dn:BSpace up:BSpace dn:H up:H dn:I up:I dn:Space up:Space up:Kb1 t:1ms up:Kb2 t:9ms dn:BSpace up:BSpace dn:Z t:1ms up:Z",
         result
     );
 
@@ -551,10 +554,7 @@ fn sim_zippychord_smartspace_custom_punc() {
     )
     .to_ascii();
     assert_eq!(
-        "dn:Kb1 t:1ms dn:BSpace up:BSpace \
-         dn:H up:H dn:I up:I dn:Space up:Space t:9ms \
-         up:Kb1 t:1ms up:Kb2 t:9ms \
-         dn:R t:1ms up:R",
+        "dn:Kb1 t:1ms dn:Kb2 t:9ms dn:BSpace up:BSpace dn:BSpace up:BSpace dn:H up:H dn:I up:I dn:Space up:Space up:Kb1 t:1ms up:Kb2 t:9ms dn:R t:1ms up:R",
         result
     );
 
@@ -566,10 +566,7 @@ fn sim_zippychord_smartspace_custom_punc() {
     )
     .to_ascii();
     assert_eq!(
-        "dn:Kb1 t:1ms dn:BSpace up:BSpace \
-         dn:H up:H dn:I up:I dn:Space up:Space t:9ms \
-         up:Kb1 t:1ms up:Kb2 t:9ms \
-         dn:RAlt t:1ms dn:BSpace up:BSpace dn:R t:1ms up:R t:1ms up:RAlt",
+        "dn:Kb1 t:1ms dn:Kb2 t:9ms dn:BSpace up:BSpace dn:BSpace up:BSpace dn:H up:H dn:I up:I dn:Space up:Space up:Kb1 t:1ms up:Kb2 t:9ms dn:RAlt t:1ms dn:BSpace up:BSpace dn:R t:1ms up:R t:1ms up:RAlt",
         result
     );
 
@@ -581,10 +578,7 @@ fn sim_zippychord_smartspace_custom_punc() {
     )
     .to_ascii();
     assert_eq!(
-        "dn:Kb1 t:1ms dn:BSpace up:BSpace \
-         dn:H up:H dn:I up:I dn:Space up:Space t:9ms \
-         up:Kb1 t:1ms up:Kb2 t:9ms \
-         dn:RAlt t:1ms dn:LShift t:1ms dn:BSpace up:BSpace dn:V t:1ms up:V t:1ms up:RAlt t:1ms up:LShift",
+        "dn:Kb1 t:1ms dn:Kb2 t:9ms dn:BSpace up:BSpace dn:BSpace up:BSpace dn:H up:H dn:I up:I dn:Space up:Space up:Kb1 t:1ms up:Kb2 t:9ms dn:RAlt t:1ms dn:LShift t:1ms dn:BSpace up:BSpace dn:V t:1ms up:V t:1ms up:RAlt t:1ms up:LShift",
         result
     );
 }
@@ -773,7 +767,7 @@ fn sim_zippy_leading_space_nondeterministic() {
     )
     .to_ascii();
     assert_eq!(
-        "dn:Space t:1ms dn:BSpace up:BSpace up:A dn:A", enabled,
+        "dn:Space t:1ms dn:A t:49ms dn:BSpace up:BSpace dn:BSpace up:BSpace up:A dn:A", enabled,
         "enabled -> chord fires -> output \"a\" (space swallowed)"
     );
 
@@ -923,7 +917,10 @@ fn sim_zippychord_suppress_space_not_first_def_key() {
         )
         .to_ascii(),
     );
-    assert_eq!("day ", d_first, "d-first matches def -> keep trailing space");
+    assert_eq!(
+        "day ", d_first,
+        "d-first matches def -> keep trailing space"
+    );
 
     // Press 'y' first (!= first def key) -> trailing space suppressed.
     let y_first = overlap_net_text(
@@ -934,7 +931,10 @@ fn sim_zippychord_suppress_space_not_first_def_key() {
         )
         .to_ascii(),
     );
-    assert_eq!("day", y_first, "y-first differs from def -> suppress trailing space");
+    assert_eq!(
+        "day", y_first,
+        "y-first differs from def -> suppress trailing space"
+    );
 }
 
 #[test]
@@ -947,15 +947,23 @@ fn sim_zippychord_suppress_space_not_first_def_key_leading_space() {
 
     // SPACE first (== first def key) -> keep trailing space -> "no ".
     let space_first = overlap_net_text(
-        &simulate_with_zippy_file_content(CFG, "d:spc d:n t:10 u:spc u:n t:300", CONTENT).to_ascii(),
+        &simulate_with_zippy_file_content(CFG, "d:spc d:n t:10 u:spc u:n t:300", CONTENT)
+            .to_ascii(),
     );
-    assert_eq!("no ", space_first, "space-first matches def -> keep trailing space");
+    assert_eq!(
+        "no ", space_first,
+        "space-first matches def -> keep trailing space"
+    );
 
     // 'n' first (!= first def key) -> suppress trailing space -> "no".
     let n_first = overlap_net_text(
-        &simulate_with_zippy_file_content(CFG, "d:n d:spc t:10 u:n u:spc t:300", CONTENT).to_ascii(),
+        &simulate_with_zippy_file_content(CFG, "d:n d:spc t:10 u:n u:spc t:300", CONTENT)
+            .to_ascii(),
     );
-    assert_eq!("no", n_first, "n-first differs from def -> suppress trailing space");
+    assert_eq!(
+        "no", n_first,
+        "n-first differs from def -> suppress trailing space"
+    );
 }
 
 // --- suppress-space: dedicated suppress key ---------------------------------
@@ -990,15 +998,17 @@ fn sim_zippychord_suppress_space_key() {
         )
         .to_ascii(),
     );
-    assert_eq!("day", suppressed, "suppress key held -> suppress trailing space");
+    assert_eq!(
+        "day", suppressed,
+        "suppress key held -> suppress trailing space"
+    );
 }
 
 #[test]
 fn sim_zippychord_suppress_space_noop_without_smart_space() {
     // With smart-space disabled there is no trailing space to begin with, so
     // suppress-space is inert regardless of press order.
-    static CFG: &str =
-        "(defsrc)(deflayer base)(defzippy file suppress-space not-first-def-key)";
+    static CFG: &str = "(defsrc)(deflayer base)(defzippy file suppress-space not-first-def-key)";
     let d_first = overlap_net_text(
         &simulate_with_zippy_file_content(CFG, "d:d d:y t:10 u:d u:y t:300", ZIPPY_FILE_CONTENT)
             .to_ascii(),
@@ -1010,8 +1020,6 @@ fn sim_zippychord_suppress_space_noop_without_smart_space() {
     assert_eq!("day", d_first, "smart-space disabled -> no trailing space");
     assert_eq!("day", y_first, "smart-space disabled -> no trailing space");
 }
-
-
 
 #[test]
 fn sim_zippychord_multikey_followup() {
@@ -1108,9 +1116,6 @@ fn sim_zippychord_followup_expires_past_idle_deadline() {
     assert_eq!("fooz", overlap_net_text(&result));
 }
 
-
-
-
 #[test]
 fn sim_zippychord_redundant_echo_delete() {
     // OPEN efficiency bug discovered by the event-stream observable (#1); see
@@ -1133,5 +1138,29 @@ fn sim_zippychord_redundant_echo_delete() {
         !result.contains("BSpace"),
         "zippychord redundantly backspaced the echoed prefix instead of preserving \
          it; output: {result}"
+    );
+}
+
+// A chord that is a proper prefix of a longer chord defers its expansion: it does not
+// fire eagerly (avoiding the over-eager churn `sim_zippychord_no_overeager_expansion`
+// guards), but it MUST still fire once the user settles on it — either by pausing past
+// the chord deadline, or by releasing the keys. Net text "error" both ways.
+#[test]
+fn sim_zippychord_deferred_prefix_chord_fires() {
+    let content = "er\terror\nres\tresponse\nsure\tsure\n";
+    // Settle by pausing: the deferred `er` fires "error" when the deadline elapses.
+    let on_pause =
+        simulate_with_zippy_file_content(ZIPPY_CFG, "d:e d:r t:300 u:e u:r t:50", content)
+            .to_ascii();
+    assert_eq!(
+        "dn:E t:1ms dn:R t:299ms up:R dn:R dn:O up:O up:R dn:R up:E t:1ms up:R", on_pause,
+        "deferred prefix chord did not fire 'error' on the deadline"
+    );
+    // Settle by releasing: the deferred `er` fires "error" on release, no pause.
+    let on_release =
+        simulate_with_zippy_file_content(ZIPPY_CFG, "d:e d:r u:e u:r t:50", content).to_ascii();
+    assert_eq!(
+        "dn:E t:1ms dn:R t:1ms up:R dn:R dn:O up:O up:R dn:R up:E t:1ms up:R", on_release,
+        "deferred prefix chord did not fire 'error' on release"
     );
 }

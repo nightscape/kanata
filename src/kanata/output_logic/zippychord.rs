@@ -61,6 +61,15 @@ struct ZchDynamicState {
     /// - all keys have been released
     /// - zchd_ticks_until_enabled shrinks to 0
     zchd_enabled_state: ZchEnabledState,
+    /// A complete chord match whose activation has been *deferred* because the keys
+    /// currently held are also a proper subset of a longer chord that could still be
+    /// completed (e.g. `er`->"error" while the keys of `sure` are arriving). Its
+    /// keys are echoed through meanwhile; it fires only if nothing longer completes —
+    /// when the chord deadline expires (`zch_tick`) or the keys start being released
+    /// (`zch_release_key`). A later press that completes a longer chord supersedes it.
+    /// This is what prevents over-eager expansion (the visible error->response->sure
+    /// churn). See [[zippy-pbt-layout-blindspot]] / ZIPPY_PBT_NOTES.md.
+    zchd_deferred: Option<Arc<ZchChordOutput>>,
     /// Is Some when a chord has been activated which has possible follow-up chords.
     /// E.g. dy -> day
     ///      dy 1 -> Monday
@@ -75,16 +84,16 @@ struct ZchDynamicState {
     /// Tracks the number of characters typed to complete an activation, which will be erased if an
     /// activation completes succesfully.
     zchd_characters_to_delete_on_next_activation: i16,
-    /// Tracks past activation for additional computation.
-    zchd_prior_activation: Option<Arc<ZchChordOutput>>,
-    /// The characters eagerly typed-through to form the *current* (not-yet-activated)
-    /// chord, in press order — i.e. what is on screen before the first activation of a
-    /// hold. Used to reuse the common prefix between these echoed input keys and the
-    /// activation output, so a chord whose output extends its own typed keys (e.g.
-    /// `ab` -> "abc") does not backspace and retype that shared prefix. Subsequent
-    /// (overlapping) activations in the same hold reuse `zchd_prior_activation`
-    /// instead; this is consumed and cleared at the first activation.
-    zchd_typed_input: Vec<ZchOutput>,
+    /// Everything zippychord currently has on screen in its own owned region, in
+    /// order: eagerly echoed input keys, the most recent activation's output, and
+    /// any trailing smart space — exactly what is visible before the next
+    /// activation runs. The next activation's common prefix is measured against
+    /// this, so any character already correct (an echoed input key the output
+    /// extends, a prior activation's output an overlapping chord shares, or a
+    /// trailing smart space the new word's space lands on) is preserved instead of
+    /// backspaced and re-typed. Persists across a key release while a followup is
+    /// pending (the followup reconciles against it); cleared on any reset.
+    zchd_on_screen: Vec<ZchOutput>,
     /// Tracker for time until prior state change to know if potential stale data should be
     /// cleared. This is a contingency in case of bugs or weirdness with OS interactions, e.g.
     /// Windows lock screen weirdness.
@@ -99,8 +108,6 @@ struct ZchDynamicState {
     /// possible; after which if a chord has not been activated, zippychording is disabled. This
     /// state is the counter for this deadline.
     zchd_ticks_until_disable: u16,
-    /// Track number of activations within the same hold.
-    zchd_same_hold_activation_count: u16,
     /// Current state of caps-word, which is a factor in handling capitalization.
     zchd_is_caps_word_active: bool,
     /// Current state of lsft which is a factor in handling capitalization.
@@ -127,8 +134,11 @@ struct ZchDynamicState {
 }
 
 impl ZchDynamicState {
-    fn zchd_tick(&mut self, is_caps_word_active: bool, layout_pending: bool) {
+    /// Returns true when the chord deadline just elapsed with a `deferred` chord
+    /// pending: the caller (`zch_tick`, which has keyboard-output access) must fire it.
+    fn zchd_tick(&mut self, is_caps_word_active: bool, layout_pending: bool) -> bool {
         const TICKS_UNTIL_FORCE_STATE_RESET: u16 = 10000;
+        let mut fire_deferred = false;
         self.zchd_ticks_since_state_change += 1;
         self.zchd_is_caps_word_active = is_caps_word_active;
         match self.zchd_enabled_state {
@@ -163,6 +173,12 @@ impl ZchDynamicState {
                             // "disable to avoid accidental chords during normal typing" case).
                             log::debug!("zippy followup deadline elapsed->clear followup");
                             self.zchd_clear_history();
+                        } else if self.zchd_deferred.is_some() {
+                            // Deadline elapsed with a deferred complete chord pending and
+                            // nothing longer completed: fire the deferred chord (the user
+                            // settled on it). Done by `zch_tick`, which has keyboard output.
+                            log::debug!("zippy deadline elapsed->fire deferred chord");
+                            fire_deferred = true;
                         } else {
                             // Initial deadline elapsed with no chord: disable to avoid accidental
                             // activations during ordinary typing.
@@ -177,6 +193,7 @@ impl ZchDynamicState {
         if self.zchd_ticks_since_state_change > TICKS_UNTIL_FORCE_STATE_RESET {
             self.zchd_reset();
         }
+        fire_deferred
     }
 
     fn zchd_state_change(&mut self, cfg: &ZchConfig) {
@@ -205,10 +222,6 @@ impl ZchDynamicState {
         self.zchd_is_altgr_active = false;
         self.zchd_last_press = ZchLastPressClassification::IsChord;
         self.zchd_enabled_state = ZchEnabledState::Enabled;
-        // A full reset must clear all dynamic activation state; this counter is
-        // otherwise only reset on a clean all-keys-released, so without this a
-        // reset mid-activation leaves it stale (it gates the common-prefix logic).
-        self.zchd_same_hold_activation_count = 0;
     }
 
     fn zchd_soft_reset(&mut self) {
@@ -228,9 +241,9 @@ impl ZchDynamicState {
         log::debug!("zchd clear historical data");
         self.zchd_characters_to_delete_on_next_activation = 0;
         self.zchd_prioritized_chords = None;
-        self.zchd_prior_activation = None;
+        self.zchd_deferred = None;
         self.zchd_prior_activation_output_count = 0;
-        self.zchd_typed_input.clear();
+        self.zchd_on_screen.clear();
     }
 
     /// Returns true if dynamic zch state is such that idling optimization can activate.
@@ -268,17 +281,20 @@ impl ZchDynamicState {
             (ZchLastPressClassification::IsChord, true) => {
                 log::debug!("all released->zippy enabled");
                 self.zchd_characters_to_delete_on_next_activation = 0;
-                self.zchd_typed_input.clear();
                 self.zchd_enabled_state = ZchEnabledState::Enabled;
-                self.zchd_same_hold_activation_count = 0;
                 if self.zchd_prioritized_chords.is_none() {
                     log::debug!("no continuation->zippy clear key erase state");
+                    // No followup: nothing on screen is owned by a pending
+                    // continuation, so drop the on-screen model (clear_history).
                     self.zchd_clear_history();
                     self.zchd_ticks_until_disable = 0;
                 } else {
-                    // A followup is pending. Keep the deadline running across the idle gap so that
-                    // waiting longer than the followup deadline cancels the pending followup;
-                    // otherwise it would persist until the next keypress and fire seconds later.
+                    // A followup is pending: keep `zchd_on_screen` (the last
+                    // activation's output plus its trailing smart space) so the
+                    // followup reconciles its common prefix against it. Also keep the
+                    // deadline running across the idle gap so that waiting longer than
+                    // the followup deadline cancels the pending followup; otherwise it
+                    // would persist until the next keypress and fire seconds later.
                     self.zchd_ticks_until_disable = followup_deadline_ticks;
                 }
             }
@@ -362,6 +378,9 @@ impl ZchState {
                 })
         {
             self.zchd.zchd_characters_to_delete_on_next_activation -= 1;
+            // The auto-erased trailing smart space is the last thing on screen; drop
+            // it from the on-screen model too so the prefix optimization stays accurate.
+            self.zchd.zchd_on_screen.pop();
             kb.press_key(OsCode::KEY_BACKSPACE)?;
             kb.release_key(OsCode::KEY_BACKSPACE)?;
         }
@@ -416,266 +435,346 @@ impl ZchState {
 
         match activation {
             HasValue(a) => {
-                // Find the longest common prefix length between what is already on
-                // screen and the new activation output. This value affects both:
-                // - the number of backspaces that need to be done
-                // - the number of characters that actually need to be typed by the activation
-                // For the FIRST activation of a hold what is on screen is the echoed
-                // input keys; for subsequent (overlapping) activations it is the prior
-                // activation's output. Reusing the prefix in both cases avoids
-                // backspacing and retyping characters that are already correct.
-                let common_prefix_len_from_past_activation = if !is_prioritized_activation
-                    && self.zchd.zchd_same_hold_activation_count == 0
-                {
-                    common_output_prefix_len(&self.zchd.zchd_typed_input, &a.zch_output)
-                } else {
-                    self.zchd
-                        .zchd_prior_activation
-                        .as_ref()
-                        .map(|prior_activation| {
-                            common_output_prefix_len(&prior_activation.zch_output, &a.zch_output)
-                        })
-                        .unwrap_or(0)
-                };
-                self.zchd.zchd_prior_activation = Some(a.clone());
-                self.zchd.zchd_same_hold_activation_count += 1;
-
-                // After an activation the window is held open only to catch a followup, so when this
-                // chord has followups use the followup deadline. (This is the held-continuation path
-                // where keys are not released between chords; the release-then-press path re-arms via
-                // `zchd_activate_chord_deadline` above.)
-                let restart_deadline = if a.zch_followups.is_some() {
-                    self.zch_cfg.zch_cfg_ticks_followup_deadline
-                } else {
-                    self.zch_cfg.zch_cfg_ticks_chord_deadline
-                };
-                self.zchd.zchd_restart_deadline(restart_deadline);
-                if !a.zch_output.is_empty() {
-                    // Zippychording eagerly types characters that form a chord and also eagerly
-                    // outputs chords that are of a maybe-to-be-activated-later chord with more
-                    // participating keys. This procedure erases both classes of typed characters
-                    // in order to have the correct typed output for this chord activation.
-                    for _ in 0..(self.zchd.zchd_characters_to_delete_on_next_activation
-                        + if is_prioritized_activation {
-                            self.zchd.zchd_prior_activation_output_count
-                        } else {
-                            0
-                        }
-                        - common_prefix_len_from_past_activation)
-                    {
-                        kb.press_key(OsCode::KEY_BACKSPACE)?;
-                        kb.release_key(OsCode::KEY_BACKSPACE)?;
-                    }
-                    // The common-prefix optimization left `common_prefix_len`
-                    // characters of this activation's output on screen (they were
-                    // not re-typed). They are still part of the visible output and
-                    // must be counted for deletion by the next activation; the
-                    // typing loop below only re-accumulates the freshly typed
-                    // (skipped-past-prefix) characters, so seed the counter with
-                    // the kept prefix length instead of zeroing it.
-                    self.zchd.zchd_characters_to_delete_on_next_activation =
-                        common_prefix_len_from_past_activation;
-                    self.zchd.zchd_prior_activation_output_count =
-                        ZchOutput::display_len(&a.zch_output);
-                } else {
-                    // Followup chords may consist of an empty output; eventually in the followup
-                    // chain has an activation output that is not empty. For empty outputs, do not
-                    // do any backspacing.
-                    self.zchd.zchd_characters_to_delete_on_next_activation += 1;
-                    self.zchd.zchd_prior_activation_output_count +=
-                        self.zchd.zchd_input_keys.zchik_keys().len() as i16;
-                    kb.press_key(osc)?;
-                }
-
-                self.zchd
-                    .zchd_prioritized_chords
-                    .clone_from(&a.zch_followups);
-                let mut released_sft = false;
-                #[cfg(feature = "interception_driver")]
-                let mut send_count = 0;
-                if self.zchd.zchd_is_altgr_active && !a.zch_output.is_empty() {
-                    kb.release_key(OsCode::KEY_RIGHTALT)?;
-                }
-                for key_to_send in a
-                    .zch_output
-                    .iter()
-                    .copied()
-                    .skip(common_prefix_len_from_past_activation as usize)
-                {
-                    #[cfg(feature = "interception_driver")]
-                    {
-                        // Note: every 5 keys on Windows Interception, do a sleep because
-                        // sending too quickly apparently causes weird behaviour...
-                        // I guess there's some buffer in the Interception code that is filling up.
-                        send_count += 1;
-                        if send_count % 5 == 0 {
-                            std::thread::sleep(std::time::Duration::from_millis(1));
-                        }
-                    }
-
-                    match key_to_send {
-                        ZchOutput::Lowercase(osc) | ZchOutput::NoEraseLowercase(osc) => {
-                            type_osc(osc, kb, &self.zchd)?;
-                        }
-                        ZchOutput::Uppercase(osc) | ZchOutput::NoEraseUppercase(osc) => {
-                            maybe_press_sft_during_activation(released_sft, kb, &self.zchd)?;
-                            type_osc(osc, kb, &self.zchd)?;
-                            maybe_release_sft_during_activation(released_sft, kb, &self.zchd)?;
-                        }
-                        ZchOutput::AltGr(osc) | ZchOutput::NoEraseAltGr(osc) => {
-                            // A note regarding maybe_press|release_sft
-                            // in contrast to always pressing|releasing altgr:
-                            //
-                            // The maybe-logic is valuable with Shift to capitalize the first
-                            // typed output during activation.
-                            // However, altgr - if already held -
-                            // does not seem useful to keep held on the first typed output so it is
-                            // always released at the beginning and pressed at the end if it was
-                            // previously being held.
-                            kb.press_key(OsCode::KEY_RIGHTALT)?;
-                            type_osc(osc, kb, &self.zchd)?;
-                            kb.release_key(OsCode::KEY_RIGHTALT)?;
-                        }
-                        ZchOutput::ShiftAltGr(osc) | ZchOutput::NoEraseShiftAltGr(osc) => {
-                            kb.press_key(OsCode::KEY_RIGHTALT)?;
-                            maybe_press_sft_during_activation(released_sft, kb, &self.zchd)?;
-                            type_osc(osc, kb, &self.zchd)?;
-                            maybe_release_sft_during_activation(released_sft, kb, &self.zchd)?;
-                            kb.release_key(OsCode::KEY_RIGHTALT)?;
-                        }
-                    };
-
-                    self.zchd.zchd_characters_to_delete_on_next_activation +=
-                        key_to_send.output_char_count();
-
-                    if !released_sft && !self.zchd.zchd_is_caps_word_active {
-                        released_sft = true;
-                        if self.zchd.zchd_is_lsft_active {
-                            kb.release_key(OsCode::KEY_LEFTSHIFT)?;
-                        }
-                        if self.zchd.zchd_is_rsft_active {
-                            kb.release_key(OsCode::KEY_RIGHTSHIFT)?;
-                        }
-                    }
-                }
-
-                // Whether the user wants to suppress the trailing smart space
-                // for this activation. `Key` mode suppresses while the flag key
-                // is held; `NotFirstDefKey` suppresses unless the first key the
-                // user pressed is the chord definition's first key. A suppressed
-                // trailing space is behaviorally identical to `smart-space`
-                // being disabled: the whole block below (including the eager
-                // participating-space release) is skipped, leaving any eager
-                // space held until its physical release, exactly as the
-                // smart-space-disabled path does.
-                let suppress_space = match self.zch_cfg.zch_cfg_suppress_space {
-                    ZchSuppressSpaceCfg::Disabled => false,
-                    ZchSuppressSpaceCfg::Key(_) => self.zchd.zchd_is_suppress_space_active,
-                    ZchSuppressSpaceCfg::NotFirstDefKey => matches!(
-                        (self.zchd.zchd_first_pressed_key, a.zch_first_def_key),
-                        (Some(first), Some(def)) if first != def
-                    ),
-                };
-                if !suppress_space
-                    && self.zch_cfg.zch_cfg_smart_space != ZchSmartSpaceCfg::Disabled
-                    && a.zch_output
-                        .last()
-                        .map(|out| !matches!(out.osc(), OsCode::KEY_SPACE | OsCode::KEY_BACKSPACE))
-                        .unwrap_or(false /* if output is empty, don't do smart spacing */)
-                {
-                    if self.zch_cfg.zch_cfg_smart_space == ZchSmartSpaceCfg::Full {
-                        self.zchd.zchd_smart_space_state = ZchSmartSpaceState::Sent;
-                    }
-
-                    // It might look unusual to add to both.
-                    // This is correct to do.
-                    // zchd_prior_activation_output_count only applies to followup activations,
-                    // which should only occur after a full release+repress of a new chord.
-                    // The full release will set zchd_characters_to_delete_on_next_activation to 0.
-                    // Overlapping chords do not use zchd_prior_activation_output_count but
-                    // instead keep track of characters to delete via
-                    // zchd_characters_to_delete_on_next_activation,
-                    // which is incremented both by typing characters
-                    // to achieve a chord in the first place,
-                    // as well as by chord activations that are overlapped
-                    // by the intended final chord.
-                    self.zchd.zchd_prior_activation_output_count += 1;
-                    self.zchd.zchd_characters_to_delete_on_next_activation += 1;
-
-                    // The participating space of a leading-space chord (e.g. " n"
-                    // -> "no") is typed eagerly as a Space press and left held. If
-                    // it is still held when the smart space is added, the output
-                    // would contain two Space-downs with no Space-up between them;
-                    // a real OS coalesces those into one held key and — since the
-                    // eager space's character was already backspaced — the trailing
-                    // smart space is silently dropped (user sees "no" not "no ").
-                    // Release the held participating space first. Releasing a space
-                    // that isn't held (chord activated letter-first) is a harmless
-                    // OS no-op, the same pattern type_osc already relies on. The
-                    // smart space itself stays a clean tap so holding the physical
-                    // space does not auto-repeat it.
-                    if self.zchd.zchd_input_keys.zchik_contains(OsCode::KEY_SPACE) {
-                        kb.release_key(OsCode::KEY_SPACE)?;
-                    }
-                    kb.press_key(OsCode::KEY_SPACE)?;
-                    kb.release_key(OsCode::KEY_SPACE)?;
-                }
-
-                if !self.zchd.zchd_is_caps_word_active {
-                    // When expanding, lsft/rsft will be released after the first press.
-                    if self.zchd.zchd_is_lsft_active {
-                        kb.press_key(OsCode::KEY_LEFTSHIFT)?;
-                    }
-                    if self.zchd.zchd_is_rsft_active {
-                        kb.press_key(OsCode::KEY_RIGHTSHIFT)?;
-                    }
-                }
-                if self.zchd.zchd_is_altgr_active && !a.zch_output.is_empty() {
-                    kb.press_key(OsCode::KEY_RIGHTALT)?;
-                }
-
-                // Note: it is incorrect to clear input keys.
-                // Zippychord will eagerly output chords even if there is an overlapping chord that
-                // may be activated later by an additional keypress before any releases happen.
-                // E.g.
-                // ab => Abba
-                // abc => Alphabet
+                // Over-eager guard: if the held keys are also a proper subset of a
+                // longer chord that could still be completed, do not expand yet. Echo
+                // the key and remember this complete chord as `deferred`; it fires on
+                // release / deadline only if nothing longer supersedes it. This is
+                // what prevents the visible error->response->sure churn.
                 //
-                // If (b a) are typed, "Abba" is outputted.
-                // If (b a) are continued to be held and (c) is subsequently pressed,
-                // "Abba" gets erased and "Alphabet" is outputted.
-                //
-                // WRONG:
-                // self.zchd.zchd_input_keys.zchik_clear()
-
-                self.zchd.zchd_last_press = ZchLastPressClassification::IsChord;
-                Ok(())
+                // A chord with any *no-erase* output is exempt: no-erase is the
+                // deliberate "persistent prefix" mechanism — its characters are meant
+                // to be deposited eagerly and survive the next activation (e.g. a dead
+                // key typed by the shorter chord and kept by the longer one), so
+                // deferring it would defeat the feature, not remove churn.
+                let is_eager_prefix = a.zch_output.iter().any(|o| o.osc_and_is_noerase().1);
+                let has_strict_superset = !is_prioritized_activation
+                    && !a.zch_output.is_empty()
+                    && !is_eager_prefix
+                    && self
+                        .zch_chords
+                        .0
+                        .ssm_has_strict_superset_ksorted(self.zchd.zchd_input_keys.zchik_keys());
+                if has_strict_superset {
+                    self.zchd.zchd_deferred = Some(a);
+                    self.zch_echo_key(kb, osc)
+                } else {
+                    self.zch_activate(kb, a, is_prioritized_activation, Some(osc))
+                }
             }
-
             IsSubset => {
-                self.zchd.zchd_last_press = ZchLastPressClassification::NotChord;
-                self.zchd.zchd_characters_to_delete_on_next_activation += 1;
-                // Record the echoed-through key (with its current casing/AltGr) so the
-                // next activation can reuse any common prefix it shares with the chord
-                // output instead of backspacing and retyping it.
-                let echoed = match (
-                    self.zchd.zchd_is_lsft_active | self.zchd.zchd_is_rsft_active,
-                    self.zchd.zchd_is_altgr_active,
-                ) {
-                    (false, false) => ZchOutput::Lowercase(osc),
-                    (true, false) => ZchOutput::Uppercase(osc),
-                    (false, true) => ZchOutput::AltGr(osc),
-                    (true, true) => ZchOutput::ShiftAltGr(osc),
-                };
-                self.zchd.zchd_typed_input.push(echoed);
-                kb.press_key(osc)
+                // The held keys are no longer a complete chord; drop any deferral.
+                self.zchd.zchd_deferred = None;
+                self.zch_echo_key(kb, osc)
             }
-
             Neither => {
                 self.zchd.zchd_soft_reset();
                 kb.press_key(osc)
             }
         }
+    }
+
+    /// Echo an input key through while a chord is still being formed — the held keys
+    /// are a strict subset/prefix of a chord, or a complete-but-`deferred` chord.
+    /// Tracks the key in the on-screen model so a later activation can reuse the common
+    /// prefix it shares with the output instead of backspacing and retyping.
+    fn zch_echo_key(&mut self, kb: &mut KbdOut, osc: OsCode) -> Result<(), std::io::Error> {
+        self.zchd.zchd_last_press = ZchLastPressClassification::NotChord;
+        self.zchd.zchd_characters_to_delete_on_next_activation += 1;
+        let echoed = match (
+            self.zchd.zchd_is_lsft_active | self.zchd.zchd_is_rsft_active,
+            self.zchd.zchd_is_altgr_active,
+        ) {
+            (false, false) => ZchOutput::Lowercase(osc),
+            (true, false) => ZchOutput::Uppercase(osc),
+            (false, true) => ZchOutput::AltGr(osc),
+            (true, true) => ZchOutput::ShiftAltGr(osc),
+        };
+        self.zchd.zchd_on_screen.push(echoed);
+        kb.press_key(osc)
+    }
+
+    /// Perform a chord activation: delete the eagerly-shown characters this output
+    /// replaces (reusing the common prefix with the on-screen model) and type the
+    /// output, then add the trailing smart space. `osc` is the triggering key press,
+    /// or `None` when this is a `deferred` chord fired from a release / deadline.
+    fn zch_activate(
+        &mut self,
+        kb: &mut KbdOut,
+        a: Arc<ZchChordOutput>,
+        is_prioritized_activation: bool,
+        osc: Option<OsCode>,
+    ) -> Result<(), std::io::Error> {
+        // Any activation supersedes a pending deferred chord.
+        self.zchd.zchd_deferred = None;
+        // Reuse the longest prefix this activation's output shares with what is
+        // already on screen (`zchd_on_screen` — echoed input keys, the prior
+        // activation's output, and any trailing smart space). This drives both
+        // the number of backspaces and the number of characters re-typed, so
+        // any already-correct character (an echoed key the output extends, a
+        // prior overlapping output, an aligned space) is kept rather than
+        // backspaced and re-typed. `on_screen_space_after_prefix` reports
+        // whether the on-screen char just past that prefix is a space, so this
+        // activation's own trailing smart space can land on it instead of a
+        // delete+retype (see `preserve_trailing_space`).
+        let common_prefix_len_from_past_activation =
+            common_output_prefix_len(&self.zchd.zchd_on_screen, &a.zch_output);
+        let on_screen_space_after_prefix = self
+            .zchd
+            .zchd_on_screen
+            .get(common_prefix_len_from_past_activation as usize)
+            .map(|out| out.osc() == OsCode::KEY_SPACE)
+            .unwrap_or(false);
+
+        // After an activation the window is held open only to catch a followup, so when this
+        // chord has followups use the followup deadline. (This is the held-continuation path
+        // where keys are not released between chords; the release-then-press path re-arms via
+        // `zchd_activate_chord_deadline` above.)
+        let restart_deadline = if a.zch_followups.is_some() {
+            self.zch_cfg.zch_cfg_ticks_followup_deadline
+        } else {
+            self.zch_cfg.zch_cfg_ticks_chord_deadline
+        };
+        self.zchd.zchd_restart_deadline(restart_deadline);
+
+        // Whether the user wants to suppress the trailing smart space
+        // for this activation. `Key` mode suppresses while the flag key
+        // is held; `NotFirstDefKey` suppresses unless the first key the
+        // user pressed is the chord definition's first key.
+        let suppress_space = match self.zch_cfg.zch_cfg_suppress_space {
+            ZchSuppressSpaceCfg::Disabled => false,
+            ZchSuppressSpaceCfg::Key(_) => self.zchd.zchd_is_suppress_space_active,
+            ZchSuppressSpaceCfg::NotFirstDefKey => matches!(
+                (self.zchd.zchd_first_pressed_key, a.zch_first_def_key),
+                (Some(first), Some(def)) if first != def
+            ),
+        };
+        // Whether this activation appends a trailing smart space: smart
+        // space enabled, not suppressed, and the output ends in a normal
+        // (non-space, non-backspace) character. Computed up front because
+        // it feeds the common-prefix optimization below.
+        let adds_smart_space = !suppress_space
+            && self.zch_cfg.zch_cfg_smart_space != ZchSmartSpaceCfg::Disabled
+            && a.zch_output
+                .last()
+                .map(|out| !matches!(out.osc(), OsCode::KEY_SPACE | OsCode::KEY_BACKSPACE))
+                .unwrap_or(false /* if output is empty, don't do smart spacing */);
+        // The trailing smart space is emitted separately from `zch_output`,
+        // so the prefix run above stops at the word. When this activation's
+        // word is a full prefix of what is on screen and the on-screen text
+        // already has a space at that position, that space *is* the trailing
+        // smart space — keep it rather than backspacing and re-typing an
+        // identical one. (`no_redundant_prefix_delete` PBT invariant.)
+        let preserve_trailing_space = adds_smart_space
+            && common_prefix_len_from_past_activation as usize == a.zch_output.len()
+            && on_screen_space_after_prefix;
+
+        if !a.zch_output.is_empty() {
+            // Zippychording eagerly types characters that form a chord and also eagerly
+            // outputs chords that are of a maybe-to-be-activated-later chord with more
+            // participating keys. This procedure erases both classes of typed characters
+            // in order to have the correct typed output for this chord activation.
+            for _ in 0..(self.zchd.zchd_characters_to_delete_on_next_activation
+                + if is_prioritized_activation {
+                    self.zchd.zchd_prior_activation_output_count
+                } else {
+                    0
+                }
+                - common_prefix_len_from_past_activation
+                - i16::from(preserve_trailing_space))
+            {
+                kb.press_key(OsCode::KEY_BACKSPACE)?;
+                kb.release_key(OsCode::KEY_BACKSPACE)?;
+            }
+            // The common-prefix optimization left `common_prefix_len`
+            // characters of this activation's output on screen (they were
+            // not re-typed). They are still part of the visible output and
+            // must be counted for deletion by the next activation; the
+            // typing loop below only re-accumulates the freshly typed
+            // (skipped-past-prefix) characters, so seed the counter with
+            // the kept prefix length instead of zeroing it.
+            self.zchd.zchd_characters_to_delete_on_next_activation =
+                common_prefix_len_from_past_activation;
+            self.zchd.zchd_prior_activation_output_count = ZchOutput::display_len(&a.zch_output);
+            // The activation deleted everything past the shared prefix and
+            // (re)typed the full output, so that output is exactly what is now
+            // on screen. A trailing smart space, if added, is appended below.
+            self.zchd.zchd_on_screen = a.zch_output.to_vec();
+        } else {
+            // Followup chords may consist of an empty output; eventually in the followup
+            // chain has an activation output that is not empty. For empty outputs, do not
+            // do any backspacing. A deferred chord is never empty (the over-eager guard
+            // requires a non-empty output), so this branch always has a triggering key.
+            let osc = osc.expect("empty-output activation only happens on a key press");
+            self.zchd.zchd_characters_to_delete_on_next_activation += 1;
+            self.zchd.zchd_prior_activation_output_count +=
+                self.zchd.zchd_input_keys.zchik_keys().len() as i16;
+            // The input key is echoed through (not an output replacement), so it
+            // is appended to what is on screen.
+            self.zchd.zchd_on_screen.push(ZchOutput::Lowercase(osc));
+            kb.press_key(osc)?;
+        }
+
+        self.zchd
+            .zchd_prioritized_chords
+            .clone_from(&a.zch_followups);
+        let mut released_sft = false;
+        #[cfg(feature = "interception_driver")]
+        let mut send_count = 0;
+        if self.zchd.zchd_is_altgr_active && !a.zch_output.is_empty() {
+            kb.release_key(OsCode::KEY_RIGHTALT)?;
+        }
+        for key_to_send in a
+            .zch_output
+            .iter()
+            .copied()
+            .skip(common_prefix_len_from_past_activation as usize)
+        {
+            #[cfg(feature = "interception_driver")]
+            {
+                // Note: every 5 keys on Windows Interception, do a sleep because
+                // sending too quickly apparently causes weird behaviour...
+                // I guess there's some buffer in the Interception code that is filling up.
+                send_count += 1;
+                if send_count % 5 == 0 {
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
+            }
+
+            match key_to_send {
+                ZchOutput::Lowercase(osc) | ZchOutput::NoEraseLowercase(osc) => {
+                    type_osc(osc, kb, &self.zchd)?;
+                }
+                ZchOutput::Uppercase(osc) | ZchOutput::NoEraseUppercase(osc) => {
+                    maybe_press_sft_during_activation(released_sft, kb, &self.zchd)?;
+                    type_osc(osc, kb, &self.zchd)?;
+                    maybe_release_sft_during_activation(released_sft, kb, &self.zchd)?;
+                }
+                ZchOutput::AltGr(osc) | ZchOutput::NoEraseAltGr(osc) => {
+                    // A note regarding maybe_press|release_sft
+                    // in contrast to always pressing|releasing altgr:
+                    //
+                    // The maybe-logic is valuable with Shift to capitalize the first
+                    // typed output during activation.
+                    // However, altgr - if already held -
+                    // does not seem useful to keep held on the first typed output so it is
+                    // always released at the beginning and pressed at the end if it was
+                    // previously being held.
+                    kb.press_key(OsCode::KEY_RIGHTALT)?;
+                    type_osc(osc, kb, &self.zchd)?;
+                    kb.release_key(OsCode::KEY_RIGHTALT)?;
+                }
+                ZchOutput::ShiftAltGr(osc) | ZchOutput::NoEraseShiftAltGr(osc) => {
+                    kb.press_key(OsCode::KEY_RIGHTALT)?;
+                    maybe_press_sft_during_activation(released_sft, kb, &self.zchd)?;
+                    type_osc(osc, kb, &self.zchd)?;
+                    maybe_release_sft_during_activation(released_sft, kb, &self.zchd)?;
+                    kb.release_key(OsCode::KEY_RIGHTALT)?;
+                }
+            };
+
+            self.zchd.zchd_characters_to_delete_on_next_activation +=
+                key_to_send.output_char_count();
+
+            if !released_sft && !self.zchd.zchd_is_caps_word_active {
+                released_sft = true;
+                if self.zchd.zchd_is_lsft_active {
+                    kb.release_key(OsCode::KEY_LEFTSHIFT)?;
+                }
+                if self.zchd.zchd_is_rsft_active {
+                    kb.release_key(OsCode::KEY_RIGHTSHIFT)?;
+                }
+            }
+        }
+
+        // A suppressed trailing space is behaviorally identical to
+        // `smart-space` being disabled: the whole block below (including
+        // the eager participating-space release) is skipped, leaving any
+        // eager space held until its physical release, exactly as the
+        // smart-space-disabled path does. (`suppress_space` /
+        // `adds_smart_space` are computed before the delete loop above.)
+        if adds_smart_space {
+            if self.zch_cfg.zch_cfg_smart_space == ZchSmartSpaceCfg::Full {
+                self.zchd.zchd_smart_space_state = ZchSmartSpaceState::Sent;
+            }
+
+            // It might look unusual to add to both.
+            // This is correct to do.
+            // zchd_prior_activation_output_count only applies to followup activations,
+            // which should only occur after a full release+repress of a new chord.
+            // The full release will set zchd_characters_to_delete_on_next_activation to 0.
+            // Overlapping chords do not use zchd_prior_activation_output_count but
+            // instead keep track of characters to delete via
+            // zchd_characters_to_delete_on_next_activation,
+            // which is incremented both by typing characters
+            // to achieve a chord in the first place,
+            // as well as by chord activations that are overlapped
+            // by the intended final chord.
+            //
+            // These counters track the trailing space whether it was freshly
+            // typed or preserved from the on-screen prefix, since either way
+            // it is on screen and owned by this activation.
+            self.zchd.zchd_prior_activation_output_count += 1;
+            self.zchd.zchd_characters_to_delete_on_next_activation += 1;
+
+            // The participating space of a leading-space chord (e.g. " n"
+            // -> "no") is typed eagerly as a Space press and left held. If
+            // it is still held when the smart space is added, the output
+            // would contain two Space-downs with no Space-up between them;
+            // a real OS coalesces those into one held key and — since the
+            // eager space's character was already backspaced — the trailing
+            // smart space is silently dropped (user sees "no" not "no ").
+            // Release the held participating space first. Releasing a space
+            // that isn't held (chord activated letter-first) is a harmless
+            // OS no-op, the same pattern type_osc already relies on. The
+            // smart space itself stays a clean tap so holding the physical
+            // space does not auto-repeat it.
+            if self.zchd.zchd_input_keys.zchik_contains(OsCode::KEY_SPACE) {
+                kb.release_key(OsCode::KEY_SPACE)?;
+            }
+            // Skip the tap entirely when the trailing space was preserved
+            // from the on-screen prefix (it is already there) — that is the
+            // redundant delete-then-retype this optimization removes.
+            if !preserve_trailing_space {
+                kb.press_key(OsCode::KEY_SPACE)?;
+                kb.release_key(OsCode::KEY_SPACE)?;
+            }
+            // Either way the trailing smart space is now on screen (the output
+            // was set above without it), so record it for the next activation's
+            // prefix reuse.
+            self.zchd
+                .zchd_on_screen
+                .push(ZchOutput::Lowercase(OsCode::KEY_SPACE));
+        }
+
+        if !self.zchd.zchd_is_caps_word_active {
+            // When expanding, lsft/rsft will be released after the first press.
+            if self.zchd.zchd_is_lsft_active {
+                kb.press_key(OsCode::KEY_LEFTSHIFT)?;
+            }
+            if self.zchd.zchd_is_rsft_active {
+                kb.press_key(OsCode::KEY_RIGHTSHIFT)?;
+            }
+        }
+        if self.zchd.zchd_is_altgr_active && !a.zch_output.is_empty() {
+            kb.press_key(OsCode::KEY_RIGHTALT)?;
+        }
+
+        // Note: it is incorrect to clear input keys.
+        // Zippychord will eagerly output chords even if there is an overlapping chord that
+        // may be activated later by an additional keypress before any releases happen.
+        // E.g.
+        // ab => Abba
+        // abc => Alphabet
+        //
+        // If (b a) are typed, "Abba" is outputted.
+        // If (b a) are continued to be held and (c) is subsequently pressed,
+        // "Abba" gets erased and "Alphabet" is outputted.
+        //
+        // WRONG:
+        // self.zchd.zchd_input_keys.zchik_clear()
+
+        self.zchd.zchd_last_press = ZchLastPressClassification::IsChord;
+        Ok(())
     }
 
     // Zch handling for key releases.
@@ -708,15 +807,35 @@ impl ZchState {
         if osc.is_zippy_ignored() {
             return kb.release_key(osc);
         }
+        // Releasing one of a deferred chord's keys commits to that chord (the user
+        // stopped extending it), so fire it now — while all its keys are still held,
+        // before the release is processed. Only a held chord key counts; a modifier
+        // release keeps the chord deferred.
+        if self.zchd.zchd_input_keys.zchik_contains(osc)
+            && let Some(a) = self.zchd.zchd_deferred.take()
+        {
+            self.zch_activate(kb, a, false, None)?;
+        }
         self.zchd.zchd_state_change(&self.zch_cfg);
         self.zchd
             .zchd_release_key(osc, self.zch_cfg.zch_cfg_ticks_followup_deadline);
         kb.release_key(osc)
     }
 
-    /// Tick the zch output state.
-    pub(crate) fn zch_tick(&mut self, is_caps_word_active: bool, layout_pending: bool) {
-        self.zchd.zchd_tick(is_caps_word_active, layout_pending);
+    /// Tick the zch output state. When the chord deadline elapses with a deferred
+    /// chord pending, fire it here (this path has keyboard-output access).
+    pub(crate) fn zch_tick(
+        &mut self,
+        kb: &mut KbdOut,
+        is_caps_word_active: bool,
+        layout_pending: bool,
+    ) -> Result<(), std::io::Error> {
+        if self.zchd.zchd_tick(is_caps_word_active, layout_pending)
+            && let Some(a) = self.zchd.zchd_deferred.take()
+        {
+            self.zch_activate(kb, a, false, None)?;
+        }
+        Ok(())
     }
 
     /// Returns true if zch state has no further processing so the idling optimization can

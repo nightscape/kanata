@@ -348,8 +348,9 @@ mod inner {
     /// 1-based line number and a ready-to-display message. Shared by config
     /// parsing (below) and the test-only config minimizer, so neither drifts
     /// from the other.
-    pub fn zch_file_lines(content: &str) -> std::result::Result<Vec<ZchFileLine<'_>>, (usize, String)>
-    {
+    pub fn zch_file_lines(
+        content: &str,
+    ) -> std::result::Result<Vec<ZchFileLine<'_>>, (usize, String)> {
         let mut lines = Vec::new();
         for (idx, line) in content.lines().enumerate() {
             let line_number = idx + 1;
@@ -526,8 +527,7 @@ mod inner {
                         ),
                         None => {
                             let list = config_value.list(s.vars()).expect("not atom, so list");
-                            if list.len() != 2
-                                || list[0].atom(s.vars()) != Some(SUPPRESS_SPACE_KEY)
+                            if list.len() != 2 || list[0].atom(s.vars()) != Some(SUPPRESS_SPACE_KEY)
                             {
                                 bail_expr!(
                                     config_value,
@@ -535,7 +535,10 @@ mod inner {
                                 );
                             }
                             let key_name = list[1].atom(s.vars()).ok_or_else(|| {
-                                anyhow_expr!(&list[1], "{SUPPRESS_SPACE_KEY} name must not be a list")
+                                anyhow_expr!(
+                                    &list[1],
+                                    "{SUPPRESS_SPACE_KEY} name must not be a list"
+                                )
                             })?;
                             let osc = str_to_oscode(key_name)
                                 .ok_or_else(|| anyhow_expr!(&list[1], "Unknown key name"))?;

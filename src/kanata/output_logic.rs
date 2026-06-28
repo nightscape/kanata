@@ -143,10 +143,18 @@ pub(super) fn zippy_is_idle() -> bool {
     }
 }
 
-pub(super) fn zippy_tick(_caps_word_is_active: bool, _layout_pending: bool) {
+pub(super) fn zippy_tick(
+    _kb: &mut KbdOut,
+    _caps_word_is_active: bool,
+    _layout_pending: bool,
+) -> Result<(), std::io::Error> {
     #[cfg(feature = "zippychord")]
     {
-        zch().zch_tick(_caps_word_is_active, _layout_pending)
+        zch().zch_tick(_kb, _caps_word_is_active, _layout_pending)
+    }
+    #[cfg(not(feature = "zippychord"))]
+    {
+        Ok(())
     }
 }
 
