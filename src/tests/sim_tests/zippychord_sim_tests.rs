@@ -1208,7 +1208,6 @@ fn sim_zippychord_deferred_chord_survives_short_gap() {
 // The followup deadline elapsing between the two presses of `ou` strands the already
 // echoed `o`, so the expansion is appended to it ("can oyou ").
 #[test]
-#[ignore = "known bug: zchd_clear_history strands the echo of a still-held key"]
 fn sim_zippychord_echo_stranded_by_followup_deadline() {
     let input = "d:c t:8 d:n t:8 u:c t:2 u:n t:290 d:o t:10 d:u t:30 u:o t:5 u:u t:400";
     let result = simulate_with_zippy_file_content(SUCCESSION_CFG, input, SUCCESSION_TSV).to_ascii();
@@ -1286,4 +1285,43 @@ fn sim_zippychord_followup_chain_did_didnt() {
     let input = "d:d t:8 d:o t:8 u:d t:2 u:o t:60 d:d t:12 u:d t:60 d:n t:12 u:n t:400";
     let result = simulate_with_zippy_file_content(SUCCESSION_CFG, input, SUCCESSION_TSV).to_ascii();
     assert_eq!("didnt ", overlap_net_text(&result), "raw: {result}");
+}
+
+// The followup deadline expiring mid-chord must not delete text the user typed before
+// the window: here the held keys never complete a chord, so every character stands.
+#[test]
+fn sim_zippychord_followup_deadline_expiry_without_chord_keeps_text() {
+    let input = "d:c t:8 d:n t:8 u:c t:2 u:n t:290 d:o t:20 d:z t:12 u:o t:5 u:z t:400";
+    let result = simulate_with_zippy_file_content(SUCCESSION_CFG, input, SUCCESSION_TSV).to_ascii();
+    assert_eq!("can oz", overlap_net_text(&result), "raw: {result}");
+}
+
+// The deadline expiring with nothing held at all: the soft-reset path leaves no state
+// behind, so a chord typed after the 500ms idle-reactivate wait expands from scratch.
+#[test]
+fn sim_zippychord_deadline_expiry_with_nothing_held() {
+    let input = "d:z t:8 u:z t:600 d:c t:8 d:n t:8 u:c t:2 u:n t:400";
+    let result = simulate_with_zippy_file_content(SUCCESSION_CFG, input, SUCCESSION_TSV).to_ascii();
+    assert_eq!("zcan ", overlap_net_text(&result), "raw: {result}");
+}
+
+static SUPPRESS_CFG: &str = "(defsrc lalt)(deflayer base lalt)(defzippy file \
+    on-first-press-chord-deadline 50 followup-chord-deadline 300 smart-space full \
+    suppress-space not-first-def-key)";
+static SUPPRESS_TSV: &str = "ab\talpha\nab cd\tcharlie\n";
+
+// `not-first-def-key` compares against the followup component's own first definition
+// key (`c` of `cd`), re-armed when the followup's keys start arriving. The followup
+// replaces the root's output, so only its own word remains.
+#[test]
+fn sim_zippychord_suppress_space_across_followup_boundary() {
+    let def_key_first = "d:a t:8 d:b t:8 u:a t:2 u:b t:60 d:c t:8 d:d t:8 u:c t:2 u:d t:400";
+    let result =
+        simulate_with_zippy_file_content(SUPPRESS_CFG, def_key_first, SUPPRESS_TSV).to_ascii();
+    assert_eq!("charlie ", overlap_net_text(&result), "raw: {result}");
+
+    let other_key_first = "d:a t:8 d:b t:8 u:a t:2 u:b t:60 d:d t:8 d:c t:8 u:d t:2 u:c t:400";
+    let result =
+        simulate_with_zippy_file_content(SUPPRESS_CFG, other_key_first, SUPPRESS_TSV).to_ascii();
+    assert_eq!("charlie", overlap_net_text(&result), "raw: {result}");
 }
