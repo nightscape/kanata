@@ -59,6 +59,18 @@ const NONCHORD_ALPHA: &[char] = &['u', 'v', 'w', 'x', 'y', 'z'];
 // tap-hold (u–z) alphabets, so they cannot form a chord or be a tap-hold input.
 const SMART_SPACE_PUNCT: &[char] = &['.'];
 
+/// Which parse wins when both consume every pressed key, the case the orphan rule
+/// cannot separate. Set to the followup, matching what the implementation does today,
+/// so the orphan-rule red set stays about orphans alone. ZIP.6 settles it.
+const BOTH_ORPHAN_FREE_PREFERS_FOLLOWUP: bool = true;
+
+/// Whether the state machine demands Martin's orphan-free parse preference: it gates
+/// generation of the rolled succession that makes the rule observable, and the model
+/// predicts the orphan-free parse for it. Off until the mechanism lands (ZIP.5), which
+/// leaves the state machine exactly as it was before the rule existed. Turning it on
+/// reds `zippychord_state_machine` on the counterexample recorded in ZIPPY_PBT_NOTES.md.
+const ZIP4_ORPHAN_PREFERENCE_ENFORCED: bool = false;
+
 fn is_smart_space_punct(c: char) -> bool {
     SMART_SPACE_PUNCT.contains(&c)
 }
@@ -232,6 +244,16 @@ pub enum KanataTransition {
     /// the backspace accounting bugs live.
     ChordExpansion {
         target: Target,
+        events: Vec<(u16, KeyAction)>,
+    },
+    /// A rolled succession inside the followup window: the pending followup's
+    /// keys are pressed and then, before any release, the remaining keys of a root
+    /// chord that contains them. Both readings are admissible parses of the same
+    /// keystrokes; `rolled_parse_prefers_root` decides which one the output must
+    /// correspond to.
+    OrphanFreeRoll {
+        followup: usize,
+        root: usize,
         events: Vec<(u16, KeyAction)>,
     },
     Literal {
@@ -448,6 +470,80 @@ fn display_len(out: &[OutItem]) -> i32 {
 }
 
 impl KanataModel {
+    fn root_key_set(&self, i: usize) -> Option<BTreeSet<char>> {
+        self.roots.get(i).map(|r| {
+            let mut k = r.keys.clone();
+            if r.lead_space {
+                k.insert(' ');
+            }
+            k
+        })
+    }
+
+    fn followup_key_set(&self, i: usize) -> Option<BTreeSet<char>> {
+        self.prioritized.as_ref().and_then(|c| c.get(i)).map(|c| {
+            let mut k = c.keys.clone();
+            if c.lead_space {
+                k.insert(' ');
+            }
+            k
+        })
+    }
+
+    /// Compare the two admissible parses of a rolled succession by orphan count and
+    /// report whether the root chord wins. Taking the keys as the pending followup
+    /// leaves the root's remaining keys unconsumed; taking them as the root chord
+    /// consumes every key. Fewest orphans wins.
+    ///
+    /// A tie means both parses are orphan-free, which is the case ZIP.6 must rule on;
+    /// the generator excludes it so this stays a pure statement of the orphan rule.
+    fn rolled_parse_prefers_root(&self, followup: usize, root: usize) -> bool {
+        let f = self.followup_key_set(followup).expect("followup pending");
+        let r = self.root_key_set(root).expect("root exists");
+        let pressed: BTreeSet<char> = f.union(&r).copied().collect();
+        let orphans_if_followup = pressed.difference(&f).count();
+        let orphans_if_root = pressed.difference(&r).count();
+        if orphans_if_root == orphans_if_followup {
+            return !BOTH_ORPHAN_FREE_PREFERS_FOLLOWUP;
+        }
+        orphans_if_root < orphans_if_followup
+    }
+
+    /// Whether a (pending followup, root) pair states the orphan rule and nothing else.
+    /// The followup's keys must be a strict subset of the root's, so exactly one parse
+    /// is orphan-free, and no third root may be a subset of the pressed keys, which
+    /// would admit a further parse this two-way comparison does not model.
+    fn roll_pair_is_unambiguous(&self, followup: usize, root: usize) -> bool {
+        let (Some(child), Some(rt)) = (
+            self.prioritized.as_ref().and_then(|c| c.get(followup)),
+            self.roots.get(root),
+        ) else {
+            return false;
+        };
+        // A participating space is its own dimension (the leading-space chords) and an
+        // empty output has its own activation path; both change what a roll does today
+        // for reasons unrelated to parse preference, so they stay out of this rule.
+        if child.lead_space || rt.lead_space || child.out.is_empty() || rt.out.is_empty() {
+            return false;
+        }
+        // A followup with its own chain link can consume the root's remaining keys too,
+        // making both parses orphan-free — a ZIP.6 tie rather than a statement of the
+        // orphan rule.
+        if !child.followups.is_empty() {
+            return false;
+        }
+        let (Some(f), Some(r)) = (self.followup_key_set(followup), self.root_key_set(root)) else {
+            return false;
+        };
+        if !(f.is_subset(&r) && f.len() < r.len()) {
+            return false;
+        }
+        !(0..self.roots.len()).filter(|i| *i != root).any(|i| {
+            self.root_key_set(i)
+                .is_some_and(|other| other.is_subset(&r))
+        })
+    }
+
     fn resolve(&self, target: &Target) -> (Vec<OutItem>, Vec<Child>, bool) {
         match target {
             Target::Root(i) => {
@@ -737,12 +833,90 @@ impl ReferenceStateMachine for KanataRef {
         // and layout-pending-freeze interactions are a fidelity risk, and the
         // within-deadline "still fires" case is already pinned by the deterministic
         // `sim_zippychord_followup_fires_within_idle_deadline` test. See ZIPPY_PBT_NOTES.md.)
+        // The rolled succession that makes the orphan-preference rule observable. The
+        // rest of this generator cannot reach it: a fresh root is never offered while a
+        // followup is pending, and `ChordExpansion` releases every key of one chord
+        // before the next begins, so no key is ever held across two chords.
+        // Pairs are restricted to a followup whose keys are a STRICT subset of the
+        // root's, which is what makes one parse orphan-free and the other not; an equal
+        // pair is the both-orphan-free case ZIP.6 must rule on and is left out.
+        let mut roll_pairs: Vec<(usize, usize, Vec<char>, Vec<char>)> = Vec::new();
+        if let Some(children) = state
+            .prioritized
+            .as_ref()
+            .filter(|_| ZIP4_ORPHAN_PREFERENCE_ENFORCED)
+        {
+            for fi in 0..children.len() {
+                let Some(f) = state.followup_key_set(fi) else {
+                    continue;
+                };
+                for ri in 0..state.roots.len() {
+                    let Some(r) = state.root_key_set(ri) else {
+                        continue;
+                    };
+                    if state.roll_pair_is_unambiguous(fi, ri) {
+                        let rest: Vec<char> = r.difference(&f).copied().collect();
+                        roll_pairs.push((fi, ri, f.iter().copied().collect(), rest));
+                    }
+                }
+            }
+        }
+        let roll: BoxedStrategy<KanataTransition> = if roll_pairs.is_empty() {
+            (1u16..=3)
+                .prop_map(|ms| KanataTransition::Idle { ms })
+                .boxed()
+        } else {
+            proptest::sample::select(roll_pairs)
+                .prop_flat_map(|(fi, ri, fkeys, rest)| {
+                    let n = fkeys.len() + rest.len();
+                    let all: Vec<char> = fkeys.iter().chain(rest.iter()).copied().collect();
+                    let first = Just(fkeys).prop_shuffle();
+                    let second = Just(rest).prop_shuffle();
+                    let release = Just(all).prop_shuffle();
+                    let delays = prop::collection::vec(0u16..=PRESS_GAP_MAX, n);
+                    let release_delays = prop::collection::vec(0u16..=RELEASE_GAP_MAX, n);
+                    (
+                        Just((fi, ri)),
+                        first,
+                        second,
+                        release,
+                        delays,
+                        release_delays,
+                    )
+                        .prop_map(
+                            move |((fi, ri), first, second, release, delays, release_delays)| {
+                                let mut events = Vec::with_capacity(2 * n);
+                                let mut d = delays.into_iter();
+                                // The followup's keys land first and stay held while the
+                                // root chord's remaining keys arrive.
+                                for k in first.into_iter().chain(second) {
+                                    events.push((d.next().unwrap_or(1), KeyAction::Press(k)));
+                                }
+                                for (i, (k, delay)) in
+                                    release.into_iter().zip(release_delays).enumerate()
+                                {
+                                    let delay = if i == 0 { delay.max(1) } else { delay };
+                                    events.push((delay, KeyAction::Release(k)));
+                                }
+                                KanataTransition::OrphanFreeRoll {
+                                    followup: fi,
+                                    root: ri,
+                                    events,
+                                }
+                            },
+                        )
+                })
+                .boxed()
+        };
+
         if state.prioritized.is_some() {
             if state.taphold.is_empty() {
-                prop_oneof![6 => chord, 2 => literal, 3 => free, 2 => idle_cross].boxed()
+                prop_oneof![4 => chord, 2 => literal, 3 => free, 2 => idle_cross, 4 => roll].boxed()
             } else {
-                prop_oneof![6 => chord, 2 => literal, 3 => free, 3 => taphold, 2 => idle_cross]
-                    .boxed()
+                prop_oneof![
+                    4 => chord, 2 => literal, 3 => free, 3 => taphold, 2 => idle_cross, 4 => roll
+                ]
+                .boxed()
             }
         } else {
             prop_oneof![
@@ -831,6 +1005,45 @@ impl ReferenceStateMachine for KanataRef {
                     state.until_enabled = state.cfg.wait;
                 }
             }
+            KanataTransition::OrphanFreeRoll {
+                followup,
+                root,
+                events,
+            } => {
+                if state.enabled == Enabled::Enabled {
+                    let order = KanataTransition::press_order(events);
+                    assert!(
+                        state.rolled_parse_prefers_root(*followup, *root),
+                        "a rolled succession is only generated where one parse is orphan-free"
+                    );
+                    // The orphan-free parse consumes every pressed key as the root
+                    // chord, so the pending followup never fires and its word stays.
+                    state.prioritized = None;
+                    state.followup_until_clear = None;
+                    let target = Target::Root(*root);
+                    let order_suppresses = match state.cfg.suppress_space {
+                        SuppressSpace::None => false,
+                        SuppressSpace::NotFirstDefKey => {
+                            let first_pressed = order.first().copied();
+                            let first_def = state.first_def_key(&target);
+                            matches!((first_pressed, first_def), (Some(p), Some(d)) if p != d)
+                        }
+                    };
+                    let (out, followups, is_followup) = state.resolve(&target);
+                    state.activate(&out, followups, is_followup, order_suppresses);
+                    state.enabled = Enabled::Enabled;
+                } else {
+                    state.smart_space_sent = false;
+                    for k in KanataTransition::press_order(events) {
+                        state.visible.push(k);
+                    }
+                    state.prioritized = None;
+                    state.followup_until_clear = None;
+                    state.last_act_len = 0;
+                    state.enabled = Enabled::WaitEnable;
+                    state.until_enabled = state.cfg.wait;
+                }
+            }
             KanataTransition::FreeType { press, .. } => {
                 // Naive oracle: predict ordinary literal typing. This is WRONG
                 // whenever the typed keys form/complete a chord (the impl will
@@ -856,6 +1069,30 @@ impl ReferenceStateMachine for KanataRef {
         // keys that no longer match the target chord, or free-typing keys that
         // became chord keys after the dict shrank) and spurious failures.
         match transition {
+            KanataTransition::OrphanFreeRoll {
+                followup,
+                root,
+                events,
+            } => {
+                // Shrinking the dictionary can invalidate the pair, so re-check it
+                // rather than trusting what generation saw.
+                if !state.roll_pair_is_unambiguous(*followup, *root) {
+                    return false;
+                }
+                let (Some(f), Some(r)) =
+                    (state.followup_key_set(*followup), state.root_key_set(*root))
+                else {
+                    return false;
+                };
+                let order = KanataTransition::press_order(events);
+                // The followup's keys must land FIRST and still be held as the root's
+                // remaining keys arrive — that ordering is what makes the gesture a roll
+                // and both parses admissible. Shrinking the dictionary can leave a stored
+                // event list whose order no longer satisfies it.
+                let pressed: BTreeSet<char> = order.iter().copied().collect();
+                let leading: BTreeSet<char> = order.iter().take(f.len()).copied().collect();
+                pressed == r && leading == f
+            }
             KanataTransition::ChordExpansion { target, events } => {
                 let target_keys: Option<BTreeSet<char>> = match target {
                     Target::Root(i) => state.roots.get(*i).map(|r| {
@@ -1694,7 +1931,8 @@ impl StateMachineTest for Sut {
                 feed_release(k, c);
                 k.tick_ms(50, &None).unwrap();
             }
-            KanataTransition::ChordExpansion { events, .. } => {
+            KanataTransition::OrphanFreeRoll { events, .. }
+            | KanataTransition::ChordExpansion { events, .. } => {
                 for (delay, action) in events {
                     if *delay > 0 {
                         k.tick_ms(*delay as u128, &None).unwrap();
@@ -1774,6 +2012,71 @@ impl StateMachineTest for Sut {
         );
         state
     }
+}
+
+/// Generator reach for the orphan-preference region: a dictionary is only useful
+/// here if some followup's keys are a strict subset of some root's, and the rolled
+/// transition is only offered when that pair exists. Both rates are measured rather
+/// than assumed — a rate of zero would make the invariant below vacuous.
+#[test]
+fn orphan_free_roll_region_is_reachable() {
+    use proptest::strategy::{Strategy, ValueTree};
+    use proptest::test_runner::TestRunner;
+
+    let mut runner = TestRunner::deterministic();
+    let strategy = <KanataRef as ReferenceStateMachine>::init_state();
+    let (mut dicts_with_pair, mut rolls, samples) = (0usize, 0usize, 400usize);
+    for _ in 0..samples {
+        let mut m = strategy
+            .new_tree(&mut runner)
+            .expect("dict generates")
+            .current();
+        let pair = m.roots.iter().enumerate().find_map(|(ri, r)| {
+            let mut rk = r.keys.clone();
+            if r.lead_space {
+                rk.insert(' ');
+            }
+            r.followups.iter().position(|c| {
+                let mut fk = c.keys.clone();
+                if c.lead_space {
+                    fk.insert(' ');
+                }
+                fk.is_subset(&rk) && fk.len() < rk.len()
+            })?;
+            Some(ri)
+        });
+        if pair.is_none() {
+            continue;
+        }
+        dicts_with_pair += 1;
+        // Put the model in the state the rolled transition needs: a pending followup.
+        let root = m.roots[pair.unwrap()].clone();
+        m.prioritized = Some(root.followups.clone());
+        m.followup_until_clear = Some(m.cfg.followup_deadline);
+        let tr = <KanataRef as ReferenceStateMachine>::transitions(&m)
+            .new_tree(&mut runner)
+            .expect("transition generates")
+            .current();
+        if matches!(tr, KanataTransition::OrphanFreeRoll { .. }) {
+            rolls += 1;
+        }
+    }
+    println!(
+        "orphan-roll reach: {dicts_with_pair}/{samples} dictionaries carry an ambiguous \
+         followup; {rolls} of those sampled a rolled transition \
+         (enforced={ZIP4_ORPHAN_PREFERENCE_ENFORCED})"
+    );
+    assert!(
+        dicts_with_pair > 0,
+        "no generated dictionary had a followup whose keys are a strict subset of a root's, \
+         so the orphan-preference invariant would have nothing to bite on"
+    );
+    assert_eq!(
+        ZIP4_ORPHAN_PREFERENCE_ENFORCED,
+        rolls > 0,
+        "rolled transitions must be generated exactly when the rule is enforced; \
+         {rolls} were sampled from {dicts_with_pair} eligible dictionaries"
+    );
 }
 
 prop_state_machine_persisted! {

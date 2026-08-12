@@ -1325,3 +1325,19 @@ fn sim_zippychord_suppress_space_across_followup_boundary() {
         simulate_with_zippy_file_content(SUPPRESS_CFG, other_key_first, SUPPRESS_TSV).to_ascii();
     assert_eq!("charlie", overlap_net_text(&result), "raw: {result}");
 }
+
+// Golden event stream for an ambiguous followup typed without a roll: `t` after `do`
+// is a followup whose key also belongs to the main chord `it`, so this is the gesture
+// a parse-preference implementation is most likely to slow down or make churn. The
+// exact stream — not just the net text — is pinned, because latency and flicker are
+// invisible to a net-text oracle.
+#[test]
+fn sim_zippychord_ambiguous_followup_no_roll_stream_is_stable() {
+    let input = "d:d t:8 d:o t:8 u:d t:2 u:o t:60 d:t t:12 u:t t:400";
+    let result = simulate_with_zippy_file_content(SUCCESSION_CFG, input, SUCCESSION_TSV).to_ascii();
+    assert_eq!(
+        "dn:D t:8ms up:O dn:O dn:Space up:Space t:8ms up:D t:2ms up:O t:60ms \
+         dn:BSpace up:BSpace dn:N up:N up:T dn:T dn:Space up:Space t:12ms up:T",
+        result
+    );
+}
