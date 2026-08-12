@@ -1214,16 +1214,37 @@ fn sim_zippychord_echo_stranded_by_followup_deadline() {
     assert_eq!("can you ", overlap_net_text(&result), "raw: {result}");
 }
 
-// `do`->"do" then `it`->"it" rolled so `t` lands first. A lone `t` after `do` is the
-// defined way to type "dont", so the followup fires and `it` can no longer form — the
-// keys alone cannot say which word was meant. What this pins is that the previous word
-// survives: "dont" stays on screen and the orphaned `i` is appended, rather than the
-// whole word being erased and replaced by "it ".
+// `do`->"do" then `it`->"it" rolled so `t` lands first. The lone `t` fires the followup
+// `do t`->"dont", but while it is still held the `i` completes the main chord `it` — a
+// parse in which no pressed key is orphaned, which wins: "dont" is rewritten back to
+// "do " and "it " typed after it.
 #[test]
-fn sim_zippychord_followup_key_pressed_first_keeps_prior_word() {
+fn sim_zippychord_followup_key_pressed_first_corrects_to_orphan_free() {
     let input = "d:d t:8 d:o t:8 u:d t:2 u:o t:60 d:t t:12 d:i t:12 u:t t:5 u:i t:400";
     let result = simulate_with_zippy_file_content(SUCCESSION_CFG, input, SUCCESSION_TSV).to_ascii();
+    assert_eq!("do it ", overlap_net_text(&result), "raw: {result}");
+}
+
+// Releasing the followup's key ends the alternative parse: `it` can no longer form from
+// it, so "dont" stands and the later `i` is an ordinary keystroke.
+#[test]
+fn sim_zippychord_followup_release_commits_before_next_key() {
+    let input = "d:d t:8 d:o t:8 u:d t:2 u:o t:60 d:t t:12 u:t t:5 d:i t:12 u:i t:400";
+    let result = simulate_with_zippy_file_content(SUCCESSION_CFG, input, SUCCESSION_TSV).to_ascii();
     assert_eq!("dont i", overlap_net_text(&result), "raw: {result}");
+}
+
+// The state machine's shrunk counterexample as a fixed gesture: the followup `abc c`
+// fires on `c`, then `a` and `b` arrive while it is held and complete `abc` again, so
+// the followup's word is rewritten back and the chord's word typed after it.
+#[test]
+fn sim_zippychord_orphan_free_correction_repeats_root_chord() {
+    let cfg = "(defsrc lalt)(deflayer base lalt)(defzippy file \
+               on-first-press-chord-deadline 50 followup-chord-deadline 300 smart-space none)";
+    let tsv = "abc\tBb\nabc c\ta  \n";
+    let input = "d:a d:b d:c t:4 u:a u:b u:c t:20 d:c t:5 d:a t:5 d:b t:5 u:c u:a u:b t:200";
+    let result = simulate_with_zippy_file_content(cfg, input, tsv).to_ascii();
+    assert_eq!("BbBb", overlap_net_text(&result), "raw: {result}");
 }
 
 // A chord typed after a followup appends instead of erasing it.
@@ -1340,4 +1361,19 @@ fn sim_zippychord_ambiguous_followup_no_roll_stream_is_stable() {
          dn:BSpace up:BSpace dn:N up:N up:T dn:T dn:Space up:Space t:12ms up:T",
         result
     );
+}
+
+// The correction re-types what the provisional followup erased: `abc`->"B a" is cut
+// back to "B " by the followup `abc d`, then restored when `b` completes `bd`. The
+// restore keeps the "B " it can, so only the characters the followup removed are
+// retyped — which is why `no_redundant_prefix_delete` exempts corrective steps.
+#[test]
+fn sim_zippychord_correction_retypes_only_what_the_followup_erased() {
+    let cfg = "(defsrc lalt)(deflayer base lalt)(defzippy file \
+               on-first-press-chord-deadline 67 followup-chord-deadline 101 \
+               idle-reactivate-time 333 smart-space full suppress-space not-first-def-key)";
+    let tsv = "abc\tB a\nabc d\tB\nbd\taA\n";
+    let input = "d:a d:b d:c t:4 u:a u:b u:c t:20 d:d t:5 d:b t:5 u:d u:b t:200";
+    let result = simulate_with_zippy_file_content(cfg, input, tsv).to_ascii();
+    assert_eq!("B a aA", overlap_net_text(&result), "raw: {result}");
 }
