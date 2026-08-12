@@ -48,6 +48,38 @@ enum ZchSmartSpaceState {
     Sent,
 }
 
+/// Whether an activation decides its own trailing smart space or replays one already
+/// seen on screen.
+#[derive(Debug, Clone, Copy)]
+enum ZchTrailingSpace {
+    Decide,
+    Replay(bool),
+}
+
+/// What a provisional followup activation must know to be undone in favour of the
+/// orphan-free parse. The record captures everything needed to reproduce the replaced
+/// activation's OBSERVED output — its identity and every context-dependent rendering
+/// decision — because the restore replays that output rather than deciding afresh:
+/// what reappears must be exactly the text the followup replaced, or the delete budgets
+/// and `zchd_on_screen` inherit the mismatch.
+#[derive(Debug)]
+struct ZchFollowupUndo {
+    /// The chord the followup replaced; re-activating it restores both its word and
+    /// its followup map.
+    replaced: Arc<ZchChordOutput>,
+    /// The keys the followup consumed, in `ZchInputKeys`' own encoding. They are
+    /// cleared from the input set at activation (so a chain link accumulates from
+    /// empty), so they are kept here to complete a main chord alongside the keys
+    /// pressed after them.
+    keys: Vec<u16>,
+    /// The key that opened this gesture, before the followup's activation emptied the
+    /// input set and re-armed it. `not-first-def-key` compares against the first key
+    /// the user pressed, and correcting the parse does not change which that was.
+    first_pressed: Option<OsCode>,
+    /// Whether the replaced activation put a trailing smart space on screen.
+    added_trailing_space: bool,
+}
+
 #[derive(Debug, Default)]
 struct ZchDynamicState {
     /// Input to compare against configured available chords to output.
@@ -133,6 +165,18 @@ struct ZchDynamicState {
     /// suppress-space mode to compare against the activated chord's first
     /// definition key.
     zchd_first_pressed_key: Option<OsCode>,
+    /// The chord whose output is currently the last thing this module wrote. A
+    /// followup activation records the one it replaced, so the word can be put back.
+    zchd_last_activation: Option<Arc<ZchChordOutput>>,
+    /// Whether `zchd_last_activation` ended in a trailing smart space.
+    zchd_last_activation_added_space: bool,
+    /// Live while a followup's own keys are still held. Martin's rule prefers the
+    /// parse in which every pressed key participates, so as long as those keys can
+    /// still join a main chord the followup's word is provisional: completing that
+    /// chord puts the replaced word back and types the main chord's word instead.
+    /// Dies at the first release of a recorded key, which is when the alternative
+    /// parse stops being reachable.
+    zchd_followup_undo: Option<ZchFollowupUndo>,
     /// Held state of the configured suppress-space key (mode `(key <key>)`),
     /// tracked like altgr: toggled only by that key's own press/release.
     zchd_is_suppress_space_active: bool,
@@ -254,6 +298,8 @@ impl ZchDynamicState {
         self.zchd_prior_activation_output_count = 0;
         self.zchd_on_screen.clear();
         self.zchd_echo_len = 0;
+        self.zchd_last_activation = None;
+        self.zchd_followup_undo = None;
     }
 
     /// Cancel a pending followup once its deadline elapses. The finished word stops being
@@ -263,6 +309,7 @@ impl ZchDynamicState {
         log::debug!("zchd cancel pending followup");
         self.zchd_prioritized_chords = None;
         self.zchd_deferred = None;
+        self.zchd_followup_undo = None;
         self.zchd_prior_activation_output_count = 0;
         assert!(
             self.zchd_echo_len as usize <= self.zchd_on_screen.len(),
@@ -462,6 +509,25 @@ impl ZchState {
             }
         }
 
+        // Martin's parse preference: if the keys held now, together with those a
+        // provisional followup consumed, complete a main chord, that parse orphans no
+        // key and beats the followup-plus-orphans one. Checked before the plain
+        // activation below because it consumes strictly more of what was pressed.
+        if !is_prioritized_activation && let Some(undo) = self.zchd.zchd_followup_undo.take() {
+            let mut union = self.zchd.zchd_input_keys.clone();
+            for k in undo.keys.iter().copied() {
+                union.zchik_insert(OsCode::from(k));
+            }
+            if let HasValue(orphan_free) = self
+                .zch_chords
+                .0
+                .ssm_get_or_is_subset_ksorted(union.zchik_keys())
+            {
+                return self.zch_correct_to_orphan_free(kb, undo, orphan_free, union);
+            }
+            self.zchd.zchd_followup_undo = Some(undo);
+        }
+
         match activation {
             HasValue(a) => {
                 // Over-eager guard: if the held keys are also a proper subset of a
@@ -487,7 +553,13 @@ impl ZchState {
                     self.zchd.zchd_deferred = Some(a);
                     self.zch_echo_key(kb, osc)
                 } else {
-                    self.zch_activate(kb, a, is_prioritized_activation, Some(osc))
+                    self.zch_activate(
+                        kb,
+                        a,
+                        is_prioritized_activation,
+                        Some(osc),
+                        ZchTrailingSpace::Decide,
+                    )
                 }
             }
             IsSubset => {
@@ -500,6 +572,44 @@ impl ZchState {
                 kb.press_key(osc)
             }
         }
+    }
+
+    /// Put back the word a provisional followup replaced and type the main chord the
+    /// held keys complete, so no pressed key is left orphaned. Reuses the ordinary
+    /// activation path twice: re-activating the replaced chord rewrites the followup's
+    /// word back to it (the overlap path already computes those deletes), and zeroing
+    /// the delete counter in between commits it, exactly as a full key release would,
+    /// so the main chord then appends instead of replacing.
+    fn zch_correct_to_orphan_free(
+        &mut self,
+        kb: &mut KbdOut,
+        undo: ZchFollowupUndo,
+        orphan_free: Arc<ZchChordOutput>,
+        union: ZchInputKeys,
+    ) -> Result<(), std::io::Error> {
+        // Both activations below type through `type_osc`, which must know every key the
+        // user is physically holding — including the ones the followup consumed, which
+        // were cleared from the input set — or it presses a held key a second time.
+        self.zchd.zchd_input_keys = union;
+        // The restore must erase the followup's own word on top of anything echoed
+        // since: keys pressed before the main chord completed are on screen too.
+        self.zchd.zchd_characters_to_delete_on_next_activation +=
+            self.zchd.zchd_prior_activation_output_count;
+        self.zch_activate(
+            kb,
+            undo.replaced,
+            false,
+            None,
+            ZchTrailingSpace::Replay(undo.added_trailing_space),
+        )?;
+        // The restored word is committed, not a region the next activation may rewrite:
+        // clearing the on-screen model is what a full key release would do, and without
+        // it the common-prefix reuse would suppress an output that merely repeats it.
+        self.zchd.zchd_characters_to_delete_on_next_activation = 0;
+        self.zchd.zchd_on_screen.clear();
+        self.zchd.zchd_echo_len = 0;
+        self.zchd.zchd_first_pressed_key = undo.first_pressed;
+        self.zch_activate(kb, orphan_free, false, None, ZchTrailingSpace::Decide)
     }
 
     /// Echo an input key through while a chord is still being formed — the held keys
@@ -533,6 +643,7 @@ impl ZchState {
         a: Arc<ZchChordOutput>,
         is_prioritized_activation: bool,
         osc: Option<OsCode>,
+        trailing: ZchTrailingSpace,
     ) -> Result<(), std::io::Error> {
         // Any activation supersedes a pending deferred chord.
         self.zchd.zchd_deferred = None;
@@ -582,12 +693,17 @@ impl ZchState {
         // space enabled, not suppressed, and the output ends in a normal
         // (non-space, non-backspace) character. Computed up front because
         // it feeds the common-prefix optimization below.
-        let adds_smart_space = !suppress_space
-            && self.zch_cfg.zch_cfg_smart_space != ZchSmartSpaceCfg::Disabled
-            && a.zch_output
-                .last()
-                .map(|out| !matches!(out.osc(), OsCode::KEY_SPACE | OsCode::KEY_BACKSPACE))
-                .unwrap_or(false /* if output is empty, don't do smart spacing */);
+        let adds_smart_space = match trailing {
+            ZchTrailingSpace::Replay(had_space) => had_space,
+            ZchTrailingSpace::Decide => {
+                !suppress_space
+                    && self.zch_cfg.zch_cfg_smart_space != ZchSmartSpaceCfg::Disabled
+                    && a.zch_output
+                        .last()
+                        .map(|out| !matches!(out.osc(), OsCode::KEY_SPACE | OsCode::KEY_BACKSPACE))
+                        .unwrap_or(false /* if output is empty, don't do smart spacing */)
+            }
+        };
         // The trailing smart space is emitted separately from `zch_output`,
         // so the prefix run above stops at the word. When this activation's
         // word is a full prefix of what is on screen and the on-screen text
@@ -778,6 +894,19 @@ impl ZchState {
                 .push(ZchOutput::Lowercase(OsCode::KEY_SPACE));
         }
 
+        // Everything above must leave `zchd_on_screen` describing exactly what this
+        // module has on screen, because the next activation's delete budget is counted
+        // from it. An empty output echoes its key through instead of replacing the
+        // region, so it keeps whatever was already there.
+        if !a.zch_output.is_empty() {
+            assert_eq!(
+                self.zchd.zchd_characters_to_delete_on_next_activation,
+                ZchOutput::display_len(&self.zchd.zchd_on_screen),
+                "on-screen model {:?} disagrees with the delete budget",
+                self.zchd.zchd_on_screen
+            );
+        }
+
         if !self.zchd.zchd_is_caps_word_active {
             // When expanding, lsft/rsft will be released after the first press.
             if self.zchd.zchd_is_lsft_active {
@@ -797,18 +926,30 @@ impl ZchState {
         // typing (b a) outputs "Abba"; holding those and pressing (c) erases it and
         // outputs "Alphabet".
         //
-        // A followup instead ends a word — no chord extends it — so its keys are
-        // dropped. A key still held from it would otherwise join the next word's keys
-        // into an unrelated chord, whose overlap erases this output. Chain links
-        // (`do s` => `do s n`) accumulate from empty, so they still match.
-        // Dropping the keys makes the next followup reachable without the full release
-        // that would otherwise have zeroed this counter, and what is on screen is now
-        // owned by `zchd_prior_activation_output_count` alone. Leaving it set would
+        // A followup instead ends a word, so its keys leave the input set and a chain
+        // link (`do s` => `do s n`) accumulates from empty. They move to
+        // `zchd_followup_undo` rather than being forgotten: while they are still held
+        // they can complete a main chord, and that parse orphans no key, so it wins.
+        // Emptying the input set makes the next followup reachable without the full
+        // release that would otherwise have zeroed this counter, and what is on screen
+        // is owned by `zchd_prior_activation_output_count` alone; leaving it set would
         // double-count the word and over-delete.
         if is_prioritized_activation {
+            self.zchd.zchd_followup_undo =
+                self.zchd
+                    .zchd_last_activation
+                    .take()
+                    .map(|replaced| ZchFollowupUndo {
+                        replaced,
+                        keys: self.zchd.zchd_input_keys.zchik_keys().to_vec(),
+                        first_pressed: self.zchd.zchd_first_pressed_key,
+                        added_trailing_space: self.zchd.zchd_last_activation_added_space,
+                    });
             self.zchd.zchd_input_keys.zchik_clear();
             self.zchd.zchd_characters_to_delete_on_next_activation = 0;
         }
+        self.zchd.zchd_last_activation = Some(a.clone());
+        self.zchd.zchd_last_activation_added_space = adds_smart_space;
 
         self.zchd.zchd_last_press = ZchLastPressClassification::IsChord;
         Ok(())
@@ -851,7 +992,17 @@ impl ZchState {
         if self.zchd.zchd_input_keys.zchik_contains(osc)
             && let Some(a) = self.zchd.zchd_deferred.take()
         {
-            self.zch_activate(kb, a, false, None)?;
+            self.zch_activate(kb, a, false, None, ZchTrailingSpace::Decide)?;
+        }
+        // Releasing a key a provisional followup consumed ends the alternative parse:
+        // that key can no longer join a main chord, so the followup's word stands.
+        if self
+            .zchd
+            .zchd_followup_undo
+            .as_ref()
+            .is_some_and(|u| u.keys.contains(&u16::from(osc)))
+        {
+            self.zchd.zchd_followup_undo = None;
         }
         self.zchd.zchd_state_change(&self.zch_cfg);
         self.zchd
@@ -870,7 +1021,7 @@ impl ZchState {
         if self.zchd.zchd_tick(is_caps_word_active, layout_pending)
             && let Some(a) = self.zchd.zchd_deferred.take()
         {
-            self.zch_activate(kb, a, false, None)?;
+            self.zch_activate(kb, a, false, None, ZchTrailingSpace::Decide)?;
         }
         Ok(())
     }
