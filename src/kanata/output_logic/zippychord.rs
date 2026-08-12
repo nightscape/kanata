@@ -763,19 +763,24 @@ impl ZchState {
             kb.press_key(OsCode::KEY_RIGHTALT)?;
         }
 
-        // Note: it is incorrect to clear input keys.
-        // Zippychord will eagerly output chords even if there is an overlapping chord that
-        // may be activated later by an additional keypress before any releases happen.
-        // E.g.
-        // ab => Abba
-        // abc => Alphabet
+        // A plain chord keeps its input keys: holding them and pressing one more may
+        // complete an overlapping chord that supersedes this output, which is why
+        // zippychord may expand eagerly. E.g. with `ab` => Abba and `abc` => Alphabet,
+        // typing (b a) outputs "Abba"; holding those and pressing (c) erases it and
+        // outputs "Alphabet".
         //
-        // If (b a) are typed, "Abba" is outputted.
-        // If (b a) are continued to be held and (c) is subsequently pressed,
-        // "Abba" gets erased and "Alphabet" is outputted.
-        //
-        // WRONG:
-        // self.zchd.zchd_input_keys.zchik_clear()
+        // A followup instead ends a word — no chord extends it — so its keys are
+        // dropped. A key still held from it would otherwise join the next word's keys
+        // into an unrelated chord, whose overlap erases this output. Chain links
+        // (`do s` => `do s n`) accumulate from empty, so they still match.
+        // Dropping the keys makes the next followup reachable without the full release
+        // that would otherwise have zeroed this counter, and what is on screen is now
+        // owned by `zchd_prior_activation_output_count` alone. Leaving it set would
+        // double-count the word and over-delete.
+        if is_prioritized_activation {
+            self.zchd.zchd_input_keys.zchik_clear();
+            self.zchd.zchd_characters_to_delete_on_next_activation = 0;
+        }
 
         self.zchd.zchd_last_press = ZchLastPressClassification::IsChord;
         Ok(())
