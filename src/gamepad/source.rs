@@ -491,10 +491,7 @@ mod tests {
         mapped: &[OsCode],
         trace: &[(PadDeviceId, EventType)],
     ) -> Vec<KeyEvent> {
-        let _lk = match crate::tests::CFG_PARSE_LOCK.lock() {
-            Ok(guard) => guard,
-            Err(poisoned) => poisoned.into_inner(),
-        };
+        let _lk = crate::tests::cfg_parse_guard();
         let previous = std::mem::take(&mut *crate::kanata::MAPPED_KEYS.lock());
         crate::kanata::MAPPED_KEYS
             .lock()

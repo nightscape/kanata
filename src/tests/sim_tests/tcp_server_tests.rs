@@ -113,6 +113,7 @@ fn assert_no_notification(reader: &mut BufReader<TcpStream>) {
 
 #[test]
 fn disconnected_clients_are_removed_from_connections() {
+    let _lk = crate::tests::cfg_parse_guard();
     let k = Kanata::new_from_str("(defsrc a)(deflayer base a)", Default::default())
         .expect("failed to parse cfg");
     let address = TcpListener::bind("127.0.0.1:0")
@@ -145,6 +146,7 @@ fn disconnected_clients_are_removed_from_connections() {
 
 #[test]
 fn tcp_notifications_default_excludes_tap_hold_events() {
+    let _lk = crate::tests::cfg_parse_guard();
     let (mut stream, mut reader, notification_tx, _wakeup_rx) = notification_test_client();
     sync_connection(&mut stream, &mut reader);
     notification_tx
@@ -168,6 +170,7 @@ fn tcp_notifications_default_excludes_tap_hold_events() {
 
 #[test]
 fn tcp_notifications_can_be_disabled() {
+    let _lk = crate::tests::cfg_parse_guard();
     let (mut stream, mut reader, notification_tx, _wakeup_rx) = notification_test_client();
     set_subscriptions(&mut stream, &mut reader, vec![]);
     notification_tx
@@ -186,6 +189,7 @@ fn tcp_notifications_can_be_disabled() {
 
 #[test]
 fn tcp_notifications_can_all_be_enabled() {
+    let _lk = crate::tests::cfg_parse_guard();
     let (mut stream, mut reader, notification_tx, _wakeup_rx) = notification_test_client();
     set_subscriptions(
         &mut stream,
@@ -227,6 +231,7 @@ fn tcp_notifications_can_all_be_enabled() {
 
 #[test]
 fn tcp_notifications_denied_with_keylogging_disabled() {
+    let _lk = crate::tests::cfg_parse_guard();
     let (mut stream, mut reader, _notification_tx, _wakeup_rx) = notification_test_client_with_cfg(
         "(defsrc a)
           (deflayer base a)",
@@ -253,6 +258,7 @@ fn tcp_notifications_denied_with_keylogging_disabled() {
 
 #[test]
 fn tcp_notifications_forward_push_msg_and_reload_by_default() {
+    let _lk = crate::tests::cfg_parse_guard();
     let (mut stream, mut reader, notification_tx, _wakeup_rx) =
         notification_test_client_with_cfg("(defsrc a) (deflayer base a)");
     sync_connection(&mut stream, &mut reader);
@@ -274,6 +280,7 @@ fn tcp_notifications_forward_push_msg_and_reload_by_default() {
 
 #[test]
 fn tcp_notifications_push_msg_and_reload_can_be_chosen_separately() {
+    let _lk = crate::tests::cfg_parse_guard();
     let (mut stream, mut reader, notification_tx, _wakeup_rx) = notification_test_client();
     set_subscriptions(&mut stream, &mut reader, vec![MESSAGE_PUSH]);
     notification_tx

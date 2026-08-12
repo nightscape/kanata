@@ -1,5 +1,5 @@
 use kanata_parser::cfg::*;
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard};
 
 #[cfg(all(
     feature = "simulated_output",
@@ -15,7 +15,18 @@ mod sim_tests;
 ))]
 mod passthru_macos_tests;
 
-pub(crate) static CFG_PARSE_LOCK: Mutex<()> = Mutex::new(());
+static CFG_PARSE_LOCK: Mutex<()> = Mutex::new(());
+
+/// Guards the process-global state that building a `Kanata` installs: `MAPPED_KEYS`,
+/// `PRESSED_KEYS` and the zippychord dictionary (`ZCH`). Every successful
+/// `Kanata::new_from_str` overwrites all of it — a config without `defzippy` wipes the
+/// zippychord dictionary to empty — so a test must hold this for as long as it uses the
+/// instance, not merely across construction.
+///
+/// A failing test panics while holding it, so poison is routine and carries no meaning.
+pub(crate) fn cfg_parse_guard() -> MutexGuard<'static, ()> {
+    CFG_PARSE_LOCK.lock().unwrap_or_else(|p| p.into_inner())
+}
 
 fn init_log() {
     use simplelog::*;
@@ -49,10 +60,7 @@ mod parse_samples {
     #[test]
     fn parse_simple() {
         init_log();
-        let _lk = match CFG_PARSE_LOCK.lock() {
-            Ok(guard) => guard,
-            Err(poisoned) => poisoned.into_inner(),
-        };
+        let _lk = cfg_parse_guard();
         new_from_file(&std::path::PathBuf::from("./cfg_samples/simple.kbd")).unwrap();
     }
 
@@ -73,40 +81,28 @@ mod parse_samples {
     #[test]
     fn parse_minimal() {
         init_log();
-        let _lk = match CFG_PARSE_LOCK.lock() {
-            Ok(guard) => guard,
-            Err(poisoned) => poisoned.into_inner(),
-        };
+        let _lk = cfg_parse_guard();
         new_from_file(&std::path::PathBuf::from("./cfg_samples/minimal.kbd")).unwrap();
     }
 
     #[test]
     fn parse_deflayermap() {
         init_log();
-        let _lk = match CFG_PARSE_LOCK.lock() {
-            Ok(guard) => guard,
-            Err(poisoned) => poisoned.into_inner(),
-        };
+        let _lk = cfg_parse_guard();
         new_from_file(&std::path::PathBuf::from("./cfg_samples/deflayermap.kbd")).unwrap();
     }
 
     #[test]
     fn parse_default() {
         init_log();
-        let _lk = match CFG_PARSE_LOCK.lock() {
-            Ok(guard) => guard,
-            Err(poisoned) => poisoned.into_inner(),
-        };
+        let _lk = cfg_parse_guard();
         new_from_file(&std::path::PathBuf::from("./cfg_samples/kanata.kbd")).unwrap();
     }
 
     #[test]
     fn parse_jtroo() {
         init_log();
-        let _lk = match CFG_PARSE_LOCK.lock() {
-            Ok(guard) => guard,
-            Err(poisoned) => poisoned.into_inner(),
-        };
+        let _lk = cfg_parse_guard();
         let cfg = new_from_file(&std::path::PathBuf::from("./cfg_samples/jtroo.kbd")).unwrap();
         assert_eq!(cfg.layer_info.len(), 8);
     }
@@ -114,20 +110,14 @@ mod parse_samples {
     #[test]
     fn parse_f13_f24() {
         init_log();
-        let _lk = match CFG_PARSE_LOCK.lock() {
-            Ok(guard) => guard,
-            Err(poisoned) => poisoned.into_inner(),
-        };
+        let _lk = cfg_parse_guard();
         new_from_file(&std::path::PathBuf::from("./cfg_samples/f13_f24.kbd")).unwrap();
     }
 
     #[test]
     fn parse_home_row_mods() {
         init_log();
-        let _lk = match CFG_PARSE_LOCK.lock() {
-            Ok(guard) => guard,
-            Err(poisoned) => poisoned.into_inner(),
-        };
+        let _lk = cfg_parse_guard();
         new_from_file(&std::path::PathBuf::from(
             "./cfg_samples/home-row-mod-basic.kbd",
         ))
@@ -141,10 +131,7 @@ mod parse_samples {
     #[test]
     fn parse_press_release_toggle_vkeys() {
         init_log();
-        let _lk = match CFG_PARSE_LOCK.lock() {
-            Ok(guard) => guard,
-            Err(poisoned) => poisoned.into_inner(),
-        };
+        let _lk = cfg_parse_guard();
         new_from_file(&std::path::PathBuf::from(
             "./cfg_samples/key-toggle_press-only_release-only.kbd",
         ))
@@ -154,10 +141,7 @@ mod parse_samples {
     #[test]
     fn parse_automousekeys_only() {
         init_log();
-        let _lk = match CFG_PARSE_LOCK.lock() {
-            Ok(guard) => guard,
-            Err(poisoned) => poisoned.into_inner(),
-        };
+        let _lk = cfg_parse_guard();
         new_from_file(&std::path::PathBuf::from(
             "./cfg_samples/automousekeys-only.kbd",
         ))
@@ -167,10 +151,7 @@ mod parse_samples {
     #[test]
     fn parse_automousekeys_full_map() {
         init_log();
-        let _lk = match CFG_PARSE_LOCK.lock() {
-            Ok(guard) => guard,
-            Err(poisoned) => poisoned.into_inner(),
-        };
+        let _lk = cfg_parse_guard();
         new_from_file(&std::path::PathBuf::from(
             "./cfg_samples/automousekeys-full-map.kbd",
         ))
@@ -180,10 +161,7 @@ mod parse_samples {
     #[test]
     fn parse_push_msg() {
         init_log();
-        let _lk = match CFG_PARSE_LOCK.lock() {
-            Ok(guard) => guard,
-            Err(poisoned) => poisoned.into_inner(),
-        };
+        let _lk = cfg_parse_guard();
         new_from_file(&std::path::PathBuf::from("./cfg_samples/push-msg.kbd")).unwrap();
     }
 

@@ -1243,6 +1243,10 @@ fn sim_zippychord_deferred_chord_fires_across_followup_deadline_window() {
             format!("d:c t:8 d:n t:8 u:c t:2 u:n t:{gap} d:o t:10 d:u t:30 u:o t:5 u:u t:400");
         let result =
             simulate_with_zippy_file_content(SUCCESSION_CFG, &input, SUCCESSION_TSV).to_ascii();
-        assert_eq!("can you ", overlap_net_text(&result), "gap {gap}ms, raw: {result}");
+        assert_eq!(
+            "can you ",
+            overlap_net_text(&result),
+            "gap {gap}ms, raw: {result}"
+        );
     }
 }
