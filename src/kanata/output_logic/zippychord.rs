@@ -94,6 +94,11 @@ struct ZchDynamicState {
     /// backspaced and re-typed. Persists across a key release while a followup is
     /// pending (the followup reconciles against it); cleared on any reset.
     zchd_on_screen: Vec<ZchOutput>,
+    /// How many trailing `zchd_on_screen` entries are eagerly echoed input keys that no
+    /// activation has replaced yet. Cancelling a pending followup keeps exactly these —
+    /// their keys are still held and their characters are still on screen — and drops the
+    /// finished word before them.
+    zchd_echo_len: i16,
     /// Tracker for time until prior state change to know if potential stale data should be
     /// cleared. This is a contingency in case of bugs or weirdness with OS interactions, e.g.
     /// Windows lock screen weirdness.
@@ -182,7 +187,7 @@ impl ZchDynamicState {
                             // happened — this is the same readiness as after any activation, not the
                             // "disable to avoid accidental chords during normal typing" case).
                             log::debug!("zippy followup deadline elapsed->clear followup");
-                            self.zchd_clear_history();
+                            self.zchd_cancel_followup();
                         } else {
                             // Initial deadline elapsed with no chord: disable to avoid accidental
                             // activations during ordinary typing.
@@ -248,6 +253,26 @@ impl ZchDynamicState {
         self.zchd_deferred = None;
         self.zchd_prior_activation_output_count = 0;
         self.zchd_on_screen.clear();
+        self.zchd_echo_len = 0;
+    }
+
+    /// Cancel a pending followup once its deadline elapses. The finished word stops being
+    /// ours to rewrite, while keys echoed since then are still held and still on screen,
+    /// so their bookkeeping carries over to the activation still being formed.
+    fn zchd_cancel_followup(&mut self) {
+        log::debug!("zchd cancel pending followup");
+        self.zchd_prioritized_chords = None;
+        self.zchd_deferred = None;
+        self.zchd_prior_activation_output_count = 0;
+        assert!(
+            self.zchd_echo_len as usize <= self.zchd_on_screen.len(),
+            "echoed {} keys but only {} entries on screen",
+            self.zchd_echo_len,
+            self.zchd_on_screen.len()
+        );
+        let finished_word_len = self.zchd_on_screen.len() - self.zchd_echo_len as usize;
+        self.zchd_on_screen.drain(..finished_word_len);
+        self.zchd_characters_to_delete_on_next_activation = self.zchd_echo_len;
     }
 
     /// Returns true if dynamic zch state is such that idling optimization can activate.
@@ -494,6 +519,7 @@ impl ZchState {
             (true, true) => ZchOutput::ShiftAltGr(osc),
         };
         self.zchd.zchd_on_screen.push(echoed);
+        self.zchd.zchd_echo_len += 1;
         kb.press_key(osc)
     }
 
@@ -603,6 +629,7 @@ impl ZchState {
             // (re)typed the full output, so that output is exactly what is now
             // on screen. A trailing smart space, if added, is appended below.
             self.zchd.zchd_on_screen = a.zch_output.to_vec();
+            self.zchd.zchd_echo_len = 0;
         } else {
             // Followup chords may consist of an empty output; eventually in the followup
             // chain has an activation output that is not empty. For empty outputs, do not
@@ -615,6 +642,7 @@ impl ZchState {
             // The input key is echoed through (not an output replacement), so it
             // is appended to what is on screen.
             self.zchd.zchd_on_screen.push(ZchOutput::Lowercase(osc));
+            self.zchd.zchd_echo_len += 1;
             kb.press_key(osc)?;
         }
 
