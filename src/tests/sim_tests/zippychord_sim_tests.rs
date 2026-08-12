@@ -1164,3 +1164,85 @@ fn sim_zippychord_deferred_prefix_chord_fires() {
         "deferred prefix chord did not fire 'error' on release"
     );
 }
+
+/// Chords distilled from a real user config: two words that have followups
+/// (`cn`->"can", `do`->"do") followed by a second chord typed in quick succession.
+static SUCCESSION_TSV: &str = "\
+cn\tcan
+cn t\tcant
+cn n\tcant
+ou\tyou
+you\tyou
+do\tdo
+do g\tdoing
+do s\tdoes
+do n\tdont
+do t\tdont
+do d\tdid
+it\tit
+it s\tits
+";
+
+static SUCCESSION_CFG: &str = "(defsrc lalt)(deflayer base lalt)(defzippy file \
+    on-first-press-chord-deadline 50 followup-chord-deadline 300 smart-space full)";
+
+// `cn`->"can" then `ou`->"you": the `ou` expansion is lost ("can ou") when the
+// followup deadline of `cn` elapses while `ou` is held and deferred.
+#[test]
+fn sim_zippychord_deferred_chord_dropped_by_followup_deadline() {
+    let input = "d:c t:8 d:n t:8 u:c t:2 u:n t:280 d:o t:10 d:u t:30 u:o t:5 u:u t:400";
+    let result = simulate_with_zippy_file_content(SUCCESSION_CFG, input, SUCCESSION_TSV).to_ascii();
+    assert_eq!("can you ", overlap_net_text(&result), "raw: {result}");
+}
+
+// Same sequence outside the 260..=290ms gap window expands correctly.
+#[test]
+fn sim_zippychord_deferred_chord_survives_short_gap() {
+    let input = "d:c t:8 d:n t:8 u:c t:2 u:n t:60 d:o t:10 d:u t:30 u:o t:5 u:u t:400";
+    let result = simulate_with_zippy_file_content(SUCCESSION_CFG, input, SUCCESSION_TSV).to_ascii();
+    assert_eq!("can you ", overlap_net_text(&result), "raw: {result}");
+}
+
+// The followup deadline elapsing between the two presses of `ou` strands the already
+// echoed `o`, so the expansion is appended to it ("can oyou ").
+#[test]
+#[ignore = "known bug: zchd_clear_history strands the echo of a still-held key"]
+fn sim_zippychord_echo_stranded_by_followup_deadline() {
+    let input = "d:c t:8 d:n t:8 u:c t:2 u:n t:290 d:o t:10 d:u t:30 u:o t:5 u:u t:400";
+    let result = simulate_with_zippy_file_content(SUCCESSION_CFG, input, SUCCESSION_TSV).to_ascii();
+    assert_eq!("can you ", overlap_net_text(&result), "raw: {result}");
+}
+
+// `do`->"do" then `it`->"it" rolled so `t` lands first: `t` is taken as the followup
+// `do t`->"dont", then `i` completes the main chord `it`, whose activation erases the
+// whole previous word ("it " replaces "do ").
+#[test]
+#[ignore = "known bug: held followup key merges into the next word's chord"]
+fn sim_zippychord_followup_key_pressed_first_erases_prior_word() {
+    let input = "d:d t:8 d:o t:8 u:d t:2 u:o t:60 d:t t:12 d:i t:12 u:t t:5 u:i t:400";
+    let result = simulate_with_zippy_file_content(SUCCESSION_CFG, input, SUCCESSION_TSV).to_ascii();
+    assert_eq!("do it ", overlap_net_text(&result), "raw: {result}");
+}
+
+// The same two chords in typed order are unaffected.
+#[test]
+fn sim_zippychord_succession_in_order() {
+    let input = "d:d t:8 d:o t:8 u:d t:2 u:o t:60 d:i t:12 d:t t:12 u:i t:5 u:t t:400";
+    let result = simulate_with_zippy_file_content(SUCCESSION_CFG, input, SUCCESSION_TSV).to_ascii();
+    assert_eq!("do it ", overlap_net_text(&result), "raw: {result}");
+}
+
+// Gaps across the window where a pending followup used to swallow the deferred `ou`
+// expansion, and its edges. 290ms lands between the two presses of `ou` instead of
+// after them, which strands the echoed key
+// (`sim_zippychord_echo_stranded_by_followup_deadline`).
+#[test]
+fn sim_zippychord_deferred_chord_fires_across_followup_deadline_window() {
+    for gap in [250, 260, 270, 280, 300, 310] {
+        let input =
+            format!("d:c t:8 d:n t:8 u:c t:2 u:n t:{gap} d:o t:10 d:u t:30 u:o t:5 u:u t:400");
+        let result =
+            simulate_with_zippy_file_content(SUCCESSION_CFG, &input, SUCCESSION_TSV).to_ascii();
+        assert_eq!("can you ", overlap_net_text(&result), "gap {gap}ms, raw: {result}");
+    }
+}

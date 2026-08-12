@@ -166,19 +166,23 @@ impl ZchDynamicState {
                 if !layout_pending && self.zchd_ticks_until_disable > 0 {
                     self.zchd_ticks_until_disable = self.zchd_ticks_until_disable.saturating_sub(1);
                     if self.zchd_ticks_until_disable == 0 {
-                        if self.zchd_prioritized_chords.is_some() {
+                        if self.zchd_deferred.is_some() {
+                            // Deadline elapsed with a deferred complete chord pending and
+                            // nothing longer completed: fire the deferred chord (the user
+                            // settled on it). Done by `zch_tick`, which has keyboard output.
+                            // Takes precedence over cancelling a followup left pending by an
+                            // earlier chord: the activation needs `zchd_on_screen` and the
+                            // delete counter that `zchd_clear_history` drops, and it installs
+                            // its own followups, which cancels the pending one.
+                            log::debug!("zippy deadline elapsed->fire deferred chord");
+                            fire_deferred = true;
+                        } else if self.zchd_prioritized_chords.is_some() {
                             // Followup deadline elapsed: cancel the pending followup but stay
                             // enabled and ready for a fresh chord (a deliberate activation already
                             // happened — this is the same readiness as after any activation, not the
                             // "disable to avoid accidental chords during normal typing" case).
                             log::debug!("zippy followup deadline elapsed->clear followup");
                             self.zchd_clear_history();
-                        } else if self.zchd_deferred.is_some() {
-                            // Deadline elapsed with a deferred complete chord pending and
-                            // nothing longer completed: fire the deferred chord (the user
-                            // settled on it). Done by `zch_tick`, which has keyboard output.
-                            log::debug!("zippy deadline elapsed->fire deferred chord");
-                            fire_deferred = true;
                         } else {
                             // Initial deadline elapsed with no chord: disable to avoid accidental
                             // activations during ordinary typing.
