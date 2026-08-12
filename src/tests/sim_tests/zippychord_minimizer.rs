@@ -32,7 +32,7 @@
 //! never keeps it.
 
 use crate::oskbd::{KeyEvent, KeyValue};
-use crate::tests::CFG_PARSE_LOCK;
+use crate::tests::cfg_parse_guard;
 use crate::{Kanata, str_to_oscode};
 use kanata_parser::cfg::sexpr::{SExpr, Spanned, parse};
 use kanata_parser::cfg::zch_file_lines;
@@ -112,15 +112,8 @@ impl Drop for RunGuard {
 /// net visible text. `None` iff the config fails to parse — that is an *invalid
 /// reduction* (e.g. a dropped form left a dangling reference), not a repro, so
 /// the caller treats it as "does not reproduce" and the shrinker backtracks.
-///
-/// `Kanata::new_from_str` mutates the process-global zippychord state (`ZCH`),
-/// so this takes `CFG_PARSE_LOCK` for the whole run — mandatory, exactly as the
-/// sim harness and the state-machine PBT do.
 fn run_gesture(file_name: &str, kbd: &str, tsv: &str, gesture: &[Gesture]) -> Option<String> {
-    let guard = match CFG_PARSE_LOCK.lock() {
-        Ok(g) => g,
-        Err(poisoned) => poisoned.into_inner(),
-    };
+    let guard = cfg_parse_guard();
     crate::PRESSED_KEYS.lock().clear();
     let _run_guard = RunGuard { _g: guard };
     let mut fc = FxHashMap::default();
@@ -1114,6 +1107,7 @@ mod kbd_tests {
         assert!(emitted.contains("on-first-press-chord-deadline"));
         assert!(!emitted.contains("smart-space"));
         // Still a valid zippy config.
+        let _lk = cfg_parse_guard();
         let mut fc = FxHashMap::default();
         fc.insert("file".to_string(), "\n n\tno\n".to_string());
         assert!(Kanata::new_from_str(&emitted_full(&emitted), fc).is_ok());

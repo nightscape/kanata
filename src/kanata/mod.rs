@@ -3334,10 +3334,7 @@ mod tcp_layer_change_tests {
 
     #[test]
     fn direct_held_layer_press_and_release_emit_layer_changes() {
-        let _lk = match crate::tests::CFG_PARSE_LOCK.lock() {
-            Ok(guard) => guard,
-            Err(poisoned) => poisoned.into_inner(),
-        };
+        let _lk = crate::tests::cfg_parse_guard();
         let mut k = Kanata::new_from_str(
             r"
 (defsrc a)
@@ -3370,10 +3367,7 @@ mod tcp_layer_change_tests {
 
     #[test]
     fn oneshot_held_layer_timeout_emits_both_transitions_within_one_tick_batch() {
-        let _lk = match crate::tests::CFG_PARSE_LOCK.lock() {
-            Ok(guard) => guard,
-            Err(poisoned) => poisoned.into_inner(),
-        };
+        let _lk = crate::tests::cfg_parse_guard();
         let mut k = Kanata::new_from_str(
             r"
 (defsrc a)
@@ -3401,10 +3395,7 @@ mod tcp_layer_change_tests {
 
     #[test]
     fn oneshot_held_layer_consumed_by_keypress_emits_both_transitions_within_one_tick_batch() {
-        let _lk = match crate::tests::CFG_PARSE_LOCK.lock() {
-            Ok(guard) => guard,
-            Err(poisoned) => poisoned.into_inner(),
-        };
+        let _lk = crate::tests::cfg_parse_guard();
         let mut k = Kanata::new_from_str(
             r"
 (defsrc a b)

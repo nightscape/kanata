@@ -7,6 +7,7 @@ use web_time::Instant;
 
 #[test]
 fn one_second_is_roughly_1000_counted_ticks() {
+    let _lk = crate::tests::cfg_parse_guard();
     let mut k = Kanata::new_from_str("(defsrc)(deflayer base)", Default::default())
         .expect("failed to parse cfg");
 

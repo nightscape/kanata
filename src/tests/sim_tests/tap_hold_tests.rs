@@ -277,6 +277,7 @@ fn tap_hold_keys_no_options() {
 
 #[test]
 fn tap_hold_keys_duplicate_key_across_lists() {
+    let _lk = crate::tests::cfg_parse_guard();
     // A key appearing in multiple lists should be rejected at parse time.
     let cfg = "
         (defsrc a b)

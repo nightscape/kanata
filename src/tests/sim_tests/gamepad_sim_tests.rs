@@ -315,10 +315,7 @@ mod from_the_tick {
     }
 
     fn lock_cfg() -> impl Drop {
-        match CFG_PARSE_LOCK.lock() {
-            Ok(guard) => guard,
-            Err(poisoned) => poisoned.into_inner(),
-        }
+        cfg_parse_guard()
     }
 
     const ONE_BUTTON: &str = "\

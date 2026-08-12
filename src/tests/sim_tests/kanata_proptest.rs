@@ -36,7 +36,7 @@
 //! in ZIPPY_PBT_NOTES.md.
 
 use crate::oskbd::{KeyEvent, KeyValue};
-use crate::tests::CFG_PARSE_LOCK;
+use crate::tests::cfg_parse_guard;
 use crate::{Kanata, str_to_oscode};
 use proptest::prelude::*;
 use proptest::test_runner::Config;
@@ -598,16 +598,8 @@ impl ReferenceStateMachine for KanataRef {
                 followup_until_clear: None,
             })
             .prop_filter("must parse", |m| {
-                // `Kanata::new_from_str` configures the process-global zippychord
-                // state (ZCH). This filter runs during proptest's *generation*
-                // phase, outside `init_test`'s guard, so it must take the same lock
-                // the sim tests use — otherwise it clobbers ZCH's dictionary while
-                // an unrelated sim test is mid-run, which surfaces as that test's
-                // chord silently not expanding.
-                let _guard = match CFG_PARSE_LOCK.lock() {
-                    Ok(g) => g,
-                    Err(poisoned) => poisoned.into_inner(),
-                };
+                // Generation runs outside `init_test`'s guard.
+                let _guard = cfg_parse_guard();
                 let mut fc = FxHashMap::default();
                 fc.insert("file".to_string(), m.tsv());
                 Kanata::new_from_str(&m.cfg_string(), fc).is_ok()
@@ -1653,10 +1645,7 @@ impl StateMachineTest for Sut {
     type Reference = KanataRef;
 
     fn init_test(ref_state: &KanataModel) -> Self::SystemUnderTest {
-        let guard = match CFG_PARSE_LOCK.lock() {
-            Ok(g) => g,
-            Err(poisoned) => poisoned.into_inner(),
-        };
+        let guard = cfg_parse_guard();
         crate::PRESSED_KEYS.lock().clear();
         let mut fc = FxHashMap::default();
         fc.insert("file".to_string(), ref_state.tsv());
@@ -2355,10 +2344,7 @@ impl StateMachineTest for ThSut {
     type Reference = ThRef;
 
     fn init_test(ref_state: &ThModel) -> Self::SystemUnderTest {
-        let guard = match CFG_PARSE_LOCK.lock() {
-            Ok(g) => g,
-            Err(poisoned) => poisoned.into_inner(),
-        };
+        let guard = cfg_parse_guard();
         crate::PRESSED_KEYS.lock().clear();
         let kanata = Kanata::new_from_str(&ref_state.cfg_string(), FxHashMap::default())
             .expect("generated tap-hold cfg must parse");

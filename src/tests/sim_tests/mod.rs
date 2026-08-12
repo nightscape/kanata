@@ -166,10 +166,7 @@ fn simulate_with_file_content<S: AsRef<str>>(
     file_content: FxHashMap<String, String>,
 ) -> String {
     init_log();
-    let _lk = match CFG_PARSE_LOCK.lock() {
-        Ok(guard) => guard,
-        Err(poisoned) => poisoned.into_inner(),
-    };
+    let _lk = cfg_parse_guard();
     // Start from a clean global key state so a prior test (e.g. the zippychord
     // state-machine PBT, which manipulates this global) cannot contaminate us.
     crate::PRESSED_KEYS.lock().clear();
