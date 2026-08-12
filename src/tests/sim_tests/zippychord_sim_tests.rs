@@ -1179,6 +1179,8 @@ do s\tdoes
 do n\tdont
 do t\tdont
 do d\tdid
+do s n\tdoesnt
+do d n\tdidnt
 it\tit
 it s\tits
 ";
@@ -1213,15 +1215,25 @@ fn sim_zippychord_echo_stranded_by_followup_deadline() {
     assert_eq!("can you ", overlap_net_text(&result), "raw: {result}");
 }
 
-// `do`->"do" then `it`->"it" rolled so `t` lands first: `t` is taken as the followup
-// `do t`->"dont", then `i` completes the main chord `it`, whose activation erases the
-// whole previous word ("it " replaces "do ").
+// `do`->"do" then `it`->"it" rolled so `t` lands first. A lone `t` after `do` is the
+// defined way to type "dont", so the followup fires and `it` can no longer form — the
+// keys alone cannot say which word was meant. What this pins is that the previous word
+// survives: "dont" stays on screen and the orphaned `i` is appended, rather than the
+// whole word being erased and replaced by "it ".
 #[test]
-#[ignore = "known bug: held followup key merges into the next word's chord"]
-fn sim_zippychord_followup_key_pressed_first_erases_prior_word() {
+fn sim_zippychord_followup_key_pressed_first_keeps_prior_word() {
     let input = "d:d t:8 d:o t:8 u:d t:2 u:o t:60 d:t t:12 d:i t:12 u:t t:5 u:i t:400";
     let result = simulate_with_zippy_file_content(SUCCESSION_CFG, input, SUCCESSION_TSV).to_ascii();
-    assert_eq!("do it ", overlap_net_text(&result), "raw: {result}");
+    assert_eq!("dont i", overlap_net_text(&result), "raw: {result}");
+}
+
+// A chord typed after a followup appends instead of erasing it.
+#[test]
+fn sim_zippychord_chord_after_followup_appends() {
+    let input =
+        "d:d t:8 d:o t:8 u:d t:2 u:o t:60 d:t t:12 u:t t:60 d:c t:8 d:n t:8 u:c t:2 u:n t:400";
+    let result = simulate_with_zippy_file_content(SUCCESSION_CFG, input, SUCCESSION_TSV).to_ascii();
+    assert_eq!("dont can ", overlap_net_text(&result), "raw: {result}");
 }
 
 // The same two chords in typed order are unaffected.
@@ -1249,4 +1261,29 @@ fn sim_zippychord_deferred_chord_fires_across_followup_deadline_window() {
             "gap {gap}ms, raw: {result}"
         );
     }
+}
+
+// A followup chain reached by releasing each link: `do` -> `do s` -> `do s n`.
+#[test]
+fn sim_zippychord_followup_chain_released_between_links() {
+    let input = "d:d t:8 d:o t:8 u:d t:2 u:o t:60 d:s t:12 u:s t:60 d:n t:12 u:n t:400";
+    let result = simulate_with_zippy_file_content(SUCCESSION_CFG, input, SUCCESSION_TSV).to_ascii();
+    assert_eq!("doesnt ", overlap_net_text(&result), "raw: {result}");
+}
+
+// The same chain with the `s` link still held when `n` arrives — the state the
+// input-key clearing changes.
+#[test]
+fn sim_zippychord_followup_chain_link_still_held() {
+    let input = "d:d t:8 d:o t:8 u:d t:2 u:o t:60 d:s t:12 d:n t:12 u:s t:5 u:n t:400";
+    let result = simulate_with_zippy_file_content(SUCCESSION_CFG, input, SUCCESSION_TSV).to_ascii();
+    assert_eq!("doesnt ", overlap_net_text(&result), "raw: {result}");
+}
+
+// The other chain from the same root: `do` -> `do d` -> `do d n`.
+#[test]
+fn sim_zippychord_followup_chain_did_didnt() {
+    let input = "d:d t:8 d:o t:8 u:d t:2 u:o t:60 d:d t:12 u:d t:60 d:n t:12 u:n t:400";
+    let result = simulate_with_zippy_file_content(SUCCESSION_CFG, input, SUCCESSION_TSV).to_ascii();
+    assert_eq!("didnt ", overlap_net_text(&result), "raw: {result}");
 }
