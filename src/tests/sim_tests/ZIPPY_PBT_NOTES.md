@@ -223,6 +223,11 @@ union). Remaining:
   (non-vacuous); `ref_smart_space_full_punct_erases_trailing_space` pins it
   deterministically. (`,`/`;` are in the default set but deferred pending their
   output-key-name decode — see deferred dimension 3.)
+- User Backspace (`Tr::Backspace`): erases the last visible char, ends the
+  smart-space `Sent` state, and cancels a pending followup (same end state as the
+  followup deadline elapsing), so the edited word stays. A dedicated `.` arm
+  sits next to it, because a plain literal reaches `.` too rarely to find the
+  backspace→punctuation succession.
 - `suppress-space not-first-def-key` (generated only with an active smart-space):
   the trailing space is kept iff the first pressed key equals the chord's first
   definition key (leading space for a leading-space chord, else the min of the
@@ -440,6 +445,29 @@ was later **removed entirely** by the on-screen-model unification (see the redun
 echo/prefix-delete fix above) — the common-prefix logic no longer branches on
 first-vs-overlap activation, so the counter (and its reset hazard) no longer exist. The
 `zchd_on_screen` buffer it gated is cleared in `zchd_clear_history`, reached by `zchd_reset`.
+
+## Bug surfaced & FIXED: punctuation after a user edit erased a letter
+In `full` mode a chord left the smart-space state `Sent`, and only a non-ignored key
+press reset it. Backspace, Delete, Esc, Ctrl, Cmd and left Alt are zippy-ignored and
+returned before that reset, so `word ` ⌫ `.` gave `wor.` instead of `word.`.
+- Deterministic repro: `sim_zippychord_smartspace_full_backspace_ends_erasure`.
+- The state machine shrank to: one chord, Backspace, `.` (seed persisted).
+FIXED in `zippychord.rs`: the ignored-key arm sets the state to `Inactive`. Shift and
+AltGr return earlier and keep `Sent`, because they compose punctuation.
+
+## Bug surfaced & FIXED: followup rewrote a word the user had edited
+The same ignored keys left a pending followup armed, with its on-screen model of
+the last word. The next chord then deleted that word as zippychord typed it, one
+char more than was on screen after a Backspace (`no_delete_into_void` on chord
+`c`→"b  ", ⌫, `c` again). FIXED: an
+ignored-key press cancels the pending followup, exactly as the followup deadline
+does (`zchd_end_followup_on_edit`). A lone Ctrl/Cmd/Alt tap cancels it too.
+
+## Bug surfaced & FIXED: stale `Sent` after a rolled orphan-free parse
+Putting back the word a provisional followup replaced replays its trailing smart
+space and sets `Sent`. When the root word that follows ends in its own space, no
+smart space is added and `Sent` survived, so `.` erased a space of the chord output.
+FIXED: every activation sets the state from its own trailing space. Seed persisted.
 
 ## Bug surfaced & FIXED: backspace under-count (common-prefix optimization)
 When an activation reuses characters from a prior eager activation via the

@@ -401,6 +401,22 @@ fn sim_zippychord_smartspace_full() {
 }
 
 #[test]
+fn sim_zippychord_smartspace_full_backspace_ends_erasure() {
+    // The user already erased the smart space, so the punctuation must not erase the A.
+    let result = simulate_with_zippy_file_content(
+        "(defsrc)(deflayer base)(defzippy file
+         smart-space full)",
+        "d:d d:y t:10 u:d u:y t:100 d:bspc t:10 u:bspc t:10 d:. t:10 u:. t:10",
+        ZIPPY_FILE_CONTENT,
+    )
+    .to_ascii();
+    assert_eq!(
+        "dn:D t:1ms dn:A up:A up:Y dn:Y dn:Space up:Space t:9ms up:D t:1ms up:Y t:99ms dn:BSpace t:10ms up:BSpace t:10ms dn:Dot t:10ms up:Dot",
+        result
+    );
+}
+
+#[test]
 fn sim_zippychord_smartspace_spaceonly() {
     let result = simulate_with_zippy_file_content(
         "(defsrc)(deflayer base)(defzippy file
