@@ -322,6 +322,18 @@ impl ZchDynamicState {
         self.zchd_characters_to_delete_on_next_activation = self.zchd_echo_len;
     }
 
+    /// Same end state as the followup deadline elapsing.
+    fn zchd_end_followup_on_edit(&mut self) {
+        if self.zchd_prioritized_chords.is_none() {
+            return;
+        }
+        self.zchd_cancel_followup();
+        // While chord keys are held the deadline still paces the chord being formed.
+        if self.zchd_input_keys.zchik_is_empty() {
+            self.zchd_ticks_until_disable = 0;
+        }
+    }
+
     /// Returns true if dynamic zch state is such that idling optimization can activate.
     fn zchd_is_idle(&self) -> bool {
         // A live disable deadline (`ticks_until_disable > 0`) must keep ticking so it can expire —
@@ -435,6 +447,10 @@ impl ZchState {
                 return kb.press_key(osc);
             }
             osc if osc.is_zippy_ignored() => {
+                // An edit or shortcut: the text before the cursor is no longer known to
+                // be the trailing smart space or the word a followup would rewrite.
+                self.zchd.zchd_smart_space_state = ZchSmartSpaceState::Inactive;
+                self.zchd.zchd_end_followup_on_edit();
                 return kb.press_key(osc);
             }
             _ => {}
@@ -840,11 +856,15 @@ impl ZchState {
         // eager space held until its physical release, exactly as the
         // smart-space-disabled path does. (`suppress_space` /
         // `adds_smart_space` are computed before the delete loop above.)
+        // Decided by this activation alone: a word restored just before it in the same
+        // press may have left `Sent` behind.
+        self.zchd.zchd_smart_space_state =
+            if adds_smart_space && self.zch_cfg.zch_cfg_smart_space == ZchSmartSpaceCfg::Full {
+                ZchSmartSpaceState::Sent
+            } else {
+                ZchSmartSpaceState::Inactive
+            };
         if adds_smart_space {
-            if self.zch_cfg.zch_cfg_smart_space == ZchSmartSpaceCfg::Full {
-                self.zchd.zchd_smart_space_state = ZchSmartSpaceState::Sent;
-            }
-
             // It might look unusual to add to both.
             // This is correct to do.
             // zchd_prior_activation_output_count only applies to followup activations,

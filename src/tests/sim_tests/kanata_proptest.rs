@@ -269,6 +269,10 @@ pub enum KanataTransition {
     Idle {
         ms: u16,
     },
+    /// Tap Backspace, erasing the last visible char. Zippy ignores it for chording,
+    /// but it is still an edit: the trailing smart space is gone and a pending
+    /// followup is cancelled, so the edited word stays as it is.
+    Backspace,
     /// Free typing: hold an arbitrary set of keys (press order / release order
     /// shuffled), NOT targeted to any chord. The reference predicts naive literal
     /// append (treats them as ordinary keystrokes).
@@ -909,12 +913,27 @@ impl ReferenceStateMachine for KanataRef {
                 .boxed()
         };
 
+        let backspace: BoxedStrategy<KanataTransition> = if state.visible.is_empty() {
+            idle_tiny.clone().boxed()
+        } else {
+            Just(KanataTransition::Backspace).boxed()
+        };
+        // Smart-space erasure needs punctuation right after the state that decides it
+        // (a trailing space, or one the user already erased), which a plain literal
+        // reaches too rarely.
+        let punct = proptest::sample::select(SMART_SPACE_PUNCT)
+            .prop_map(|key| KanataTransition::Literal { key });
+
         if state.prioritized.is_some() {
             if state.taphold.is_empty() {
-                prop_oneof![4 => chord, 2 => literal, 3 => free, 2 => idle_cross, 4 => roll].boxed()
+                prop_oneof![
+                    4 => chord, 2 => literal, 3 => free, 2 => idle_cross, 4 => roll, 2 => backspace
+                ]
+                .boxed()
             } else {
                 prop_oneof![
-                    4 => chord, 2 => literal, 3 => free, 3 => taphold, 2 => idle_cross, 4 => roll
+                    4 => chord, 2 => literal, 3 => free, 3 => taphold, 2 => idle_cross, 4 => roll,
+                    2 => backspace
                 ]
                 .boxed()
             }
@@ -926,6 +945,8 @@ impl ReferenceStateMachine for KanataRef {
                 1 => idle_full,
                 3 => free,
                 3 => taphold,
+                4 => backspace,
+                2 => punct,
             ]
             .boxed()
         }
@@ -961,6 +982,13 @@ impl ReferenceStateMachine for KanataRef {
                 // A non-chord key: typed literally, disables zippy (-> WaitEnable
                 // on release), clears any pending followups.
                 state.type_literal(*key);
+            }
+            KanataTransition::Backspace => {
+                state.visible.pop();
+                state.smart_space_sent = false;
+                state.prioritized = None;
+                state.followup_until_clear = None;
+                state.last_act_len = 0;
             }
             KanataTransition::TapHoldTap(i) => {
                 // The tap-hold key resolves to its tap output (a non-chord key),
@@ -1095,13 +1123,19 @@ impl ReferenceStateMachine for KanataRef {
             }
             KanataTransition::ChordExpansion { target, events } => {
                 let target_keys: Option<BTreeSet<char>> = match target {
-                    Target::Root(i) => state.roots.get(*i).map(|r| {
-                        let mut k = r.keys.clone();
-                        if r.lead_space {
-                            k.insert(' ');
-                        }
-                        k
-                    }),
+                    // A fresh root while a followup is pending is deferred dimension 2;
+                    // shrinking reaches it by dropping whatever cancelled the followup.
+                    Target::Root(i) => state
+                        .roots
+                        .get(*i)
+                        .filter(|_| state.prioritized.is_none())
+                        .map(|r| {
+                            let mut k = r.keys.clone();
+                            if r.lead_space {
+                                k.insert(' ');
+                            }
+                            k
+                        }),
                     Target::Followup(i) => {
                         state.prioritized.as_ref().and_then(|c| c.get(*i)).map(|c| {
                             let mut k = c.keys.clone();
@@ -1156,6 +1190,7 @@ impl ReferenceStateMachine for KanataRef {
             // A literal must stay a plain key; if the dict shrank a key into a
             // tap-hold input, drop it (tap-hold tap is covered by TapHoldTap).
             KanataTransition::Literal { key } => !state.taphold.iter().any(|k| k.input == *key),
+            KanataTransition::Backspace => !state.visible.is_empty(),
             // Dimension 12: while a followup is pending the only idle the model
             // handles exactly is one that *crosses* the deadline (cancel → cleared-
             // but-enabled). A sub-deadline idle would leave the followup pending, and
@@ -1318,10 +1353,10 @@ impl Drop for Sut {
 }
 
 fn osc_of(c: char) -> crate::OsCode {
-    let tok = if c == ' ' {
-        "spc".to_string()
-    } else {
-        c.to_string()
+    let tok = match c {
+        ' ' => "spc".to_string(),
+        '⌫' => "bspc".to_string(),
+        c => c.to_string(),
     };
     str_to_oscode(&tok).expect("valid key")
 }
@@ -1926,6 +1961,10 @@ impl StateMachineTest for Sut {
                 feed_press(k, *key);
                 feed_release(k, *key);
             }
+            KanataTransition::Backspace => {
+                feed_press(k, '⌫');
+                feed_release(k, '⌫');
+            }
             KanataTransition::TapHoldTap(i) => {
                 // Press + release before the hold timeout => tap output. The
                 // settle tick stays below WAIT so it can't re-enable mid-transition
@@ -2286,6 +2325,16 @@ mod reference_tests {
         let m2 = apply(m2, &chord(Target::Root(0), "a"));
         let m2 = apply(m2, &KanataTransition::Literal { key: 'u' });
         assert_eq!("X u", vis(&m2), "a non-punct literal must keep the space");
+    }
+
+    #[test]
+    fn ref_backspace_ends_smart_space() {
+        // "X " minus its space by Backspace; the '.' must not erase the 'X'.
+        let m = model(SmartSpace::Full, vec![root(false, "a", "X", vec![])]);
+        let m = apply(m, &chord(Target::Root(0), "a"));
+        let m = apply(m, &KanataTransition::Backspace);
+        let m = apply(m, &KanataTransition::Literal { key: '.' });
+        assert_eq!("X.", vis(&m));
     }
 
     #[test]
